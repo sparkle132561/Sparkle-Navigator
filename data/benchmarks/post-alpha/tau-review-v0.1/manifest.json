@@ -1,0 +1,21 @@
+{
+  "dataset_id": "sparkle-post-alpha-tau-review",
+  "version": "0.1.0",
+  "split": "round-gold-reference",
+  "review": {
+    "status": "user_approved_ai_review",
+    "method": "AI source-level verification against the locked Tau snapshot",
+    "approved_by": "user",
+    "approved_at": "2026-10-10"
+  },
+  "repositories": [
+    {
+      "repository_id": "tau-v0.4.4",
+      "url": "https://github.com/huggingface/tau",
+      "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd",
+      "license": "MIT"
+    }
+  ],
+  "cases_file": "cases.json",
+  "case_count": 16
+}

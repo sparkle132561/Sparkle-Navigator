@@ -1,0 +1,59 @@
+{
+  "dataset_id": "sparkle-post-alpha-silver",
+  "version": "0.1.0",
+  "split": "silver",
+  "target_case_count": 300,
+  "generation_status": "complete",
+  "generation": {
+    "generator": "sparkle-ast-silver",
+    "generator_version": "0.1.0",
+    "method": "stdlib AST 提取类/函数声明、import 语句和调用表达式；按 Snapshot 路径排序并按题型轮转。",
+    "deterministic_input": "repository_id + source_commit + snapshot_id + Snapshot Manifest 中的 Python 路径/源码事实 + generator_version + cases_per_repository；不使用随机种子。",
+    "evidence_validation": "读取 HEAD 与 Snapshot commit 完全匹配的 source-cache；逐个 .py 文件按 Snapshot Manifest 校验 SHA-256，再由安全 Snapshot 读取器校验暂存内容；AST 语法解析成功后从相同文本提取行号与 snippet。",
+    "cases_per_repository": 60,
+    "question_types": [
+      "symbol_location",
+      "import_statement",
+      "call_site"
+    ]
+  },
+  "repositories": [
+    {
+      "repository_id": "tau-v0.4.4",
+      "url": "https://github.com/huggingface/tau",
+      "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd",
+      "license": "MIT",
+      "snapshot_id": "76f35b6ac5a23edab514ce454ae4f8d5644ace5acaa3ffa7579002d501b46754"
+    },
+    {
+      "repository_id": "fastapi-0.143.0",
+      "url": "https://github.com/fastapi/fastapi",
+      "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007",
+      "license": "MIT",
+      "snapshot_id": "d64e0cbe410592189e5ccc53302b8a467180eba02746ed5127265ffeaccc1e4f"
+    },
+    {
+      "repository_id": "django-oscar-4.2.1",
+      "url": "https://github.com/django-oscar/django-oscar",
+      "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3",
+      "license": "BSD-3-Clause",
+      "snapshot_id": "dcd75cd48eef37f6be2453965e327755525a8eabb6b940e1beaeb3388cd02666"
+    },
+    {
+      "repository_id": "httpx-0.28.1",
+      "url": "https://github.com/encode/httpx",
+      "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177",
+      "license": "BSD-3-Clause",
+      "snapshot_id": "2ac0d83928ef7aa12852e66e8c7d6d617d2f0ba8e7661ee506590e31c9e850b0"
+    },
+    {
+      "repository_id": "sparkle-navigator",
+      "url": "local://sparkle-navigator",
+      "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c",
+      "license": "NOASSERTION",
+      "snapshot_id": "29860343c67bda32f04bfa5dc3a2c5b798c0f537acfa889bb4ef79cfaf6afe5c"
+    }
+  ],
+  "cases_file": "cases.json",
+  "case_count": 300
+}

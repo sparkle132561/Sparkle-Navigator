@@ -1,0 +1,335 @@
+[
+  {
+    "case_id": "tau-loop-turn-state-flow",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "agent-loop",
+    "question_type": "control_flow",
+    "difficulty": "medium",
+    "user_input": "请沿着 Tau 的 `run_agent_loop` 说明：Provider 返回的 assistant 消息包含工具调用时，工具结果怎样进入下一轮上下文？",
+    "ground_truth": {
+      "answer_points": [
+        "run_agent_loop 从 _assistant_events 消费 Provider 事件并得到完整 AssistantMessage。",
+        "它逐个调用 _execute_tool_call，并把结束的 ToolResultMessage 加入 messages。",
+        "本轮结束后发出 TurnEndEvent、递增 turn；当后续还有工具调用时再次进入循环，最终发出 AgentEndEvent。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/loop.py", "line_start": 52, "line_end": 182, "symbols": ["run_agent_loop"]},
+        {"path": "src/tau_agent/loop.py", "line_start": 283, "line_end": 340, "symbols": ["_execute_tool_call"]}
+      ],
+      "rubric": {"must_mention": ["_assistant_events", "ToolResultMessage 写入 messages", "TurnEndEvent", "循环终态"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-before-tool-hook-order",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "tool-execution",
+    "question_type": "control_flow",
+    "difficulty": "hard",
+    "user_input": "Tau 的 `before_tool_call` 在工具执行链中的准确顺序是什么？如果它阻止调用，`after_tool_call` 还会运行吗？",
+    "ground_truth": {
+      "answer_points": [
+        "_execute_tool_call 先发出 ToolExecutionStartEvent，再调用 before_tool_call。",
+        "before_tool_call hook 之后才检查取消状态、查找工具并决定是否执行；该 hook 是 Tau 的通用调用前钩子，不专指授权。",
+        "被阻止时会构造错误结果；无论是否真正运行工具，随后仍会调用 after_tool_call，让它处理结果与错误标记。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/loop.py", "line_start": 283, "line_end": 340, "symbols": ["_execute_tool_call"]}
+      ],
+      "rubric": {"must_mention": ["before_tool_call 先于工具查找/执行", "blocked 分支", "after_tool_call 仍运行"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-tool-exception-boundary",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "tool-execution",
+    "question_type": "error_handling",
+    "difficulty": "medium",
+    "user_input": "`_run_tool` 如何区分工具异常和取消？两种情况各自会怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "普通 Exception 会转换成带错误文本的 AgentToolResult，并以 is_error=True 返回。",
+        "asyncio.CancelledError 不会被转换成普通工具错误，而是继续抛出。",
+        "finally 会关闭对后续工具更新的接收。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/loop.py", "line_start": 343, "line_end": 363, "symbols": ["_run_tool"]}
+      ],
+      "rubric": {"must_mention": ["普通异常转 ToolResult", "取消异常重新抛出", "finally 停止接收 update"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-harness-loop-event-bridge",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "agent-loop",
+    "question_type": "event_flow",
+    "difficulty": "hard",
+    "user_input": "`AgentHarness._run` 在调用 Agent Loop 前后分别负责哪些事？事件消费者和 subscribe 监听器如何收到事件？",
+    "ground_truth": {
+      "answer_points": [
+        "运行前会修复中断工具调用产生的悬空结果，并把修复消息作为 prelude 传入 run_agent_loop。",
+        "Harness 将 provider、model、system、messages、tools、max_turns、取消信号和前后工具 hook 传给 Loop。",
+        "每个事件先通知 listener，再 yield 给当前消费者；取消退出时还会向 listener 推送修复消息事件。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/harness.py", "line_start": 160, "line_end": 205, "symbols": ["AgentHarness._run"]}
+      ],
+      "rubric": {"must_mention": ["中断工具结果修复", "run_agent_loop 参数传递", "notify 后 yield", "取消时的修复通知"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-max-turns-configuration-seam",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "configuration",
+    "question_type": "configuration_trace",
+    "difficulty": "hard",
+    "user_input": "Tau v0.4.4 的 `max_turns` 字段定义在哪个配置类？它是否出现在 `CodingSessionConfig`，又由谁传给 Agent Loop？",
+    "ground_truth": {
+      "answer_points": [
+        "max_turns 定义在 tau_agent.harness.AgentHarnessConfig，类型为可选整数。",
+        "CodingSessionConfig 的字段列表不包含 max_turns，因此不能通过该配置类直接设置该上限。",
+        "AgentHarness._run 把配置中的 max_turns 传给 run_agent_loop。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/harness.py", "line_start": 39, "line_end": 48, "symbols": ["AgentHarnessConfig"]},
+        {"path": "src/tau_agent/harness.py", "line_start": 160, "line_end": 205, "symbols": ["AgentHarness._run"]},
+        {"path": "src/tau_coding/session.py", "line_start": 333, "line_end": 397, "symbols": ["CodingSessionConfig"]}
+      ],
+      "rubric": {"must_mention": ["字段属于 AgentHarnessConfig", "CodingSessionConfig 未暴露", "Harness 向 Loop 传递"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-coding-session-prompt-path",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "coding-session",
+    "question_type": "input_flow",
+    "difficulty": "medium",
+    "user_input": "新用户输入进入 `CodingSession.prompt` 后，在交给 AgentHarness 前会经过哪些步骤？运行中的 Session 收到输入时有哪些分支？",
+    "ground_truth": {
+      "answer_points": [
+        "输入首先经过 extension input hooks；若已处理则不启动 Loop，否则展开 prompt 文本。",
+        "若 Agent 正在运行，只有 steer 或 follow_up 模式会排队输入；其他情况报 RuntimeError。",
+        "空闲 Session 会刷新待写消息、模型限制并尝试自动压缩，然后构造 UserMessage/CustomMessage 并交给 Harness。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/session.py", "line_start": 3061, "line_end": 3138, "symbols": ["CodingSession.prompt"]}
+      ],
+      "rubric": {"must_mention": ["input hook", "prompt expansion", "steer/follow_up", "运行前刷新与压缩", "Harness 接收消息"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-message-end-persistence-boundary",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "session-persistence",
+    "question_type": "persistence_boundary",
+    "difficulty": "hard",
+    "user_input": "Tau 在什么事件边界把 Agent 消息写入 Session？如果写入过程重试，怎样避免重复追加？",
+    "ground_truth": {
+      "answer_points": [
+        "CodingSession 订阅 AgentHarness，并在 MessageEndEvent 时调用持久化逻辑。",
+        "_persist_message 为消息创建待写 SessionEntry，并把 entry id 作为稳定标识。",
+        "重试时先读已持久化 entries；若该 id 已存在则不重复追加，然后刷新内存 SessionState。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/session.py", "line_start": 3409, "line_end": 3416, "symbols": ["CodingSession._attach_persistence_listener", "CodingSession._persist_on_message_end"]},
+        {"path": "src/tau_coding/session.py", "line_start": 3418, "line_end": 3443, "symbols": ["CodingSession._persist_message"]}
+      ],
+      "rubric": {"must_mention": ["MessageEndEvent", "稳定 entry id", "重试去重", "刷新 SessionState"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-session-state-active-branch-replay",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "session-persistence",
+    "question_type": "state_reconstruction",
+    "difficulty": "hard",
+    "user_input": "`SessionState.from_entries` 怎样从持久化条目重建当前对话？请说明活动分支和 compaction 对消息列表的影响。",
+    "ground_truth": {
+      "answer_points": [
+        "未传 leaf_id 时，默认用文件顺序中最后一个非 leaf 条目作为回放终点；传入字符串 leaf_id 时使用指定终点，显式传 None 则选择空路径；随后通过 path_to_entry 只回放该分支路径。",
+        "message/custom_message 等条目构造消息；model、provider、thinking_level 等状态从路径上的条目更新。",
+        "新格式 compaction 按活动路径解析 first_kept_entry_id，先放摘要再保留边界之后的消息；找不到边界时只留下摘要。旧格式 replaces_entry_ids 则移除被替换消息，并在首个被替换位置插入摘要（若没有匹配项则追加摘要），保留其余消息；branch summary 格式化为 UserMessage 加入。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/session/memory.py", "line_start": 39, "line_end": 125, "symbols": ["SessionState.from_entries"]},
+        {"path": "src/tau_agent/session/memory.py", "line_start": 144, "line_end": 148, "symbols": ["_last_non_leaf_id"]},
+        {"path": "src/tau_agent/session/memory.py", "line_start": 151, "line_end": 198, "symbols": ["_apply_compaction"]}
+      ],
+      "rubric": {"must_mention": ["默认 tip 与显式 leaf_id", "path_to_entry", "状态重放", "compaction 保留边界或旧 ID 集合", "branch_summary"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-jsonl-single-entry-migration",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "session-persistence",
+    "question_type": "serialization_boundary",
+    "difficulty": "medium",
+    "user_input": "`entry_from_json_line` 的解码、兼容迁移、模型校验顺序是什么？发生错误时如何定位到具体行？",
+    "ground_truth": {
+      "answer_points": [
+        "函数先 json.loads，再对历史格式执行 _migrate_session_entry，然后用 TypeAdapter 校验 SessionEntry。",
+        "JSON 解析、Pydantic 校验或值类型错误都会包装为 SessionJsonlError。",
+        "传入 line_number 时，错误消息会包含对应行号。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/session/jsonl.py", "line_start": 24, "line_end": 32, "symbols": ["entry_from_json_line"]}
+      ],
+      "rubric": {"must_mention": ["JSON parse", "legacy migration", "TypeAdapter validation", "line_number error"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-jsonl-batch-legacy-label-migration",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "session-persistence",
+    "question_type": "compatibility_migration",
+    "difficulty": "hard",
+    "user_input": "批量读取 JSONL 时，Tau 如何处理空行和旧版没有 `target_id` 的 label 条目？",
+    "ground_truth": {
+      "answer_points": [
+        "entries_from_json_lines 按原始行号遍历并跳过空白行。",
+        "它先解码所有非空 JSON，再通过 _legacy_label_target_id 选择最早的 message、compaction 或 branch_summary；若没有这类条目，则选最早的非 label、非 leaf 条目。",
+        "迁移时若批量选择仍无目标，则回退到旧 label 的 parent_id，再回退到它自身的 id；之后逐条校验并保留原始行号，不会把 label 当成 SessionInfoEntry.title。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/session/jsonl.py", "line_start": 35, "line_end": 60, "symbols": ["entries_from_json_lines"]},
+        {"path": "src/tau_agent/session/jsonl.py", "line_start": 103, "line_end": 119, "symbols": ["_legacy_label_target_id"]},
+        {"path": "src/tau_agent/session/jsonl.py", "line_start": 72, "line_end": 75, "symbols": ["_migrate_session_entry"]}
+      ],
+      "rubric": {"must_mention": ["跳过空行", "先全量解码", "branchable 优先及普通条目回退", "parent_id/id 最终回退", "原始行号"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-tool-definition-adapter",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "tool-contracts",
+    "question_type": "adapter_contract",
+    "difficulty": "medium",
+    "user_input": "`ToolDefinition.to_agent_tool()` 将哪些定义信息交给 Tau Agent Loop？哪些调用参数不会继续传给底层 executor？",
+    "ground_truth": {
+      "answer_points": [
+        "ToolDefinition 保存工具名、描述、提示片段/规范、JSON 输入 schema 与异步 executor。",
+        "转换后 AgentTool 保留 name、description、parameters、prompt metadata，并把 label 设为工具名；executor 包装闭包成为 execute_fn。",
+        "包装闭包会忽略 tool_call_id 和 on_update，只把 arguments 与 cancellation signal 交给原 executor。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/tools.py", "line_start": 96, "line_end": 134, "symbols": ["ToolDefinition", "ToolDefinition.to_agent_tool"]}
+      ],
+      "rubric": {"must_mention": ["input schema", "prompt metadata", "label=name", "executor adapter", "ignored call id/update"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-default-coding-tool-order",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "tool-contracts",
+    "question_type": "configuration_trace",
+    "difficulty": "easy",
+    "user_input": "`create_coding_tools` 默认注册哪些工具、顺序是什么？省略 cwd 时相对路径按哪里解析？",
+    "ground_truth": {
+      "answer_points": [
+        "默认工具依次为 read、write、edit、bash。",
+        "传入 cwd 时将其转成 Path 并传给各工具工厂。",
+        "省略 cwd 时，工厂调用时的当前工作目录成为相对路径根目录。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/tools.py", "line_start": 164, "line_end": 185, "symbols": ["create_coding_tools"]}
+      ],
+      "rubric": {"must_mention": ["read/write/edit/bash 顺序", "cwd", "调用时进程当前目录"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-write-tool-durable-effects",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "tool-contracts",
+    "question_type": "side_effects",
+    "difficulty": "medium",
+    "user_input": "Tau 的 write 工具如何确定目标路径、避免同进程同路径并发写交错，并报告写入结果？",
+    "ground_truth": {
+      "answer_points": [
+        "相对路径会基于工具创建时的 cwd 解析。",
+        "执行器在 per-path async lock 内创建父目录并以 UTF-8 写入，覆盖现有文件。",
+        "成功结果包含路径和写入字符数。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/tools.py", "line_start": 421, "line_end": 470, "symbols": ["create_write_tool_definition"]}
+      ],
+      "rubric": {"must_mention": ["cwd 相对路径", "per-path lock", "父目录与 UTF-8 写入", "结果详情"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-edit-atomic-validation",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "tool-contracts",
+    "question_type": "error_handling",
+    "difficulty": "hard",
+    "user_input": "Tau 的 edit 工具对多项文本替换采用什么匹配约束？如果某项不唯一或与另一项重叠，文件会处于什么状态？",
+    "ground_truth": {
+      "answer_points": [
+        "每个 oldText 必须非空且在原始文件中恰好出现一次；替换区间不能重叠。",
+        "执行器先规范化换行并调用 apply_edits_to_normalized_content 完成整组验证，然后才写回文件。",
+        "验证失败时在写入前抛出 ToolInputError，因此不会只应用部分编辑；成功后恢复原换行/BOM 并返回 diff/patch。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/tools.py", "line_start": 478, "line_end": 580, "symbols": ["create_edit_tool_definition"]},
+        {"path": "src/tau_coding/tools.py", "line_start": 923, "line_end": 955, "symbols": ["apply_edits_to_normalized_content"]}
+      ],
+      "rubric": {"must_mention": ["唯一匹配", "不重叠", "所有替换先验证", "失败不部分写入", "恢复换行/BOM"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-auto-compaction-trigger-and-provider",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "context-management",
+    "question_type": "control_flow",
+    "difficulty": "hard",
+    "user_input": "Tau 自动上下文压缩的触发条件是什么？生成摘要时是否复用带工具的 Agent Loop？",
+    "ground_truth": {
+      "answer_points": [
+        "auto_compact_enabled=False 时有效阈值为 None；否则有效阈值小于等于零、活动上下文条目不足两个、估算 token 未超过阈值或没有可压缩计划时，均不压缩。",
+        "有压缩计划时，Tau 把待摘要消息送入 _generate_compaction_summary，再追加 CompactionEntry，记录 first_kept_entry_id 与 token/usage/provider/model 元数据，并刷新持久化 SessionState 和 Harness 消息。",
+        "摘要生成直接调用 Provider.stream_response，tools 为空；AssistantErrorEvent 或空摘要会导致失败。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/session.py", "line_start": 3748, "line_end": 3770, "symbols": ["CodingSession._maybe_auto_compact"]},
+        {"path": "src/tau_coding/session.py", "line_start": 3772, "line_end": 3813, "symbols": ["CodingSession._generate_compaction_summary"]},
+        {"path": "src/tau_coding/session.py", "line_start": 1191, "line_end": 1201, "symbols": ["CodingSession.auto_compact_token_threshold"]},
+        {"path": "src/tau_coding/session.py", "line_start": 3871, "line_end": 3901, "symbols": ["CodingSession._append_compaction"]}
+      ],
+      "rubric": {"must_mention": ["关闭/有效阈值条件", "保留计划", "独立 Provider 摘要请求", "tools=[]", "CompactionEntry 持久化及状态刷新"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-steering-versus-follow-up-queue",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "agent-loop",
+    "question_type": "state_transition",
+    "difficulty": "medium",
+    "user_input": "Tau 在 Agent 运行中收到新输入时，steering 和 follow-up 分别怎样入队？CodingSession 未指定相应 streaming_behavior 时会怎样？",
+    "ground_truth": {
+      "answer_points": [
+        "AgentHarness.steer_message 和 follow_up_message 分别追加到不同队列，并返回当前队列计数。",
+        "CodingSession.prompt 检测到 Harness 正在运行时，streaming_behavior=steer 或 follow_up 会调用对应队列并发出 queue update event。",
+        "运行中未指定支持的行为会抛 RuntimeError，而不会静默启动第二个 Loop。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/harness.py", "line_start": 121, "line_end": 146, "symbols": ["AgentHarness.steer_message", "AgentHarness.follow_up_message"]},
+        {"path": "src/tau_coding/session.py", "line_start": 3061, "line_end": 3138, "symbols": ["CodingSession.prompt"]}
+      ],
+      "rubric": {"must_mention": ["两个独立队列", "对应 streaming_behavior", "queue update event", "其他行为报错"]}
+    },
+    "provenance": {"verification_status": "user_approved_ai_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  }
+]

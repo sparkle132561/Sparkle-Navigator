@@ -1,0 +1,1660 @@
+[
+  {
+    "case_id": "tau-provider-context-repairs-tool-history",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "agent-loop",
+    "question_type": "context_reconstruction",
+    "difficulty": "hard",
+    "user_input": "Agent Loop 为下一次 Provider 请求准备消息时，会过滤哪些失败的 AssistantMessage？工具调用缺少或错位的 ToolResult 时，历史修复逻辑怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "_provider_context 只从本次 Provider 上下文中过滤 stop_reason 为 error 或 aborted 且 content 为空的 AssistantMessage；原始 Loop 消息列表仍保留这些诊断历史。",
+        "repair_tool_history 让每个 ToolCall 恰好对应一个紧邻的 ToolResult：优先复用并移动已有结果，缺失时合成中断错误结果，并丢弃孤立或重复结果。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/loop.py", "line_start": 185, "line_end": 201, "symbols": ["_provider_context"]},
+        {"path": "src/tau_agent/tool_history.py", "line_start": 40, "line_end": 163, "symbols": ["repair_tool_history"]}
+      ],
+      "rubric": {"must_mention": ["只过滤空内容 error/aborted", "只改变 Provider 上下文", "每个 ToolCall 配一个相邻结果", "缺失结果合成", "孤立/重复结果丢弃"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-assistant-event-lifecycle-and-timing",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "agent-loop",
+    "question_type": "event_flow",
+    "difficulty": "hard",
+    "user_input": "Agent Loop 怎样把 Provider 的 Assistant 事件转换为 Agent 消息事件？ResponseTiming 的首输出时间和总时长从哪里计算？",
+    "ground_truth": {
+      "answer_points": [
+        "AssistantStartEvent 产生 MessageStartEvent；流式文本、思考或工具调用事件转为 MessageUpdateEvent；AssistantDoneEvent 与 AssistantErrorEvent 最终转为 MessageEndEvent。",
+        "若 Provider 没有先发 AssistantStartEvent，终态事件前会补发 MessageStartEvent。",
+        "计时累加等待 Provider 下一事件的时间；首输出在第一次文本、思考或工具调用事件到达时记录，终态事件把首输出时间和总等待时长写入 ResponseTiming。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_agent/loop.py", "line_start": 204, "line_end": 280, "symbols": ["_assistant_events", "_response_timing"]}
+      ],
+      "rubric": {"must_mention": ["Start/Update/End 映射", "缺少 Start 时补 Start", "首输出事件类型", "等待 Provider 事件计时"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-openai-provider-http-retry-policy",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "provider",
+    "question_type": "retry_policy",
+    "difficulty": "hard",
+    "user_input": "OpenAI-compatible Provider 收到 HTTP 错误响应时，哪些状态码可重试？重试耗尽或等待期间取消时会发生什么？",
+    "ground_truth": {
+      "answer_points": [
+        "408、409、425、429 和所有 5xx 状态码属于可重试状态；同时 attempt 必须小于配置的 max_retries。",
+        "重试前发出 ProviderRetryEvent，包含尝试次数、延迟、状态码和响应体信息；等待会检查取消信号。",
+        "重试条件不满足时发出 ProviderErrorEvent，并在 data 中报告 HTTP 状态码、响应体和总尝试次数；取消等待则结束流，不再发起请求。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_ai/openai_compatible.py", "line_start": 282, "line_end": 318, "symbols": ["OpenAICompatibleProvider._stream"]},
+        {"path": "src/tau_ai/openai_compatible.py", "line_start": 404, "line_end": 407, "symbols": ["OpenAICompatibleProvider._should_retry"]},
+        {"path": "src/tau_ai/openai_compatible.py", "line_start": 1382, "line_end": 1383, "symbols": ["_is_transient_status"]}
+      ],
+      "rubric": {"must_mention": ["可重试状态码", "max_retries 上限", "ProviderRetryEvent", "取消不再请求", "耗尽后 ProviderErrorEvent"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-read-tool-offset-limit-and-truncation",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "tool-contracts",
+    "question_type": "boundary_case",
+    "difficulty": "medium",
+    "user_input": "Tau 内置 read 工具怎样解释 offset 和 limit？offset=0、超出文件末尾、以及结果超过工具输出上限时分别怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "offset 未提供或为 0 时从首行开始；正数 offset 按 1 起始的行号换算，负数 offset 会被拒绝；limit 若提供必须是正整数。",
+        "起始行超出文件总行数时抛 ToolInputError。",
+        "先按 offset/limit 选取文本，再按全局最大行数或字节数执行头部截断；若仍有内容，会附续读用的下一个 offset 提示。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/tools.py", "line_start": 212, "line_end": 225, "symbols": ["create_read_tool_definition"]},
+        {"path": "src/tau_coding/tools.py", "line_start": 305, "line_end": 359, "symbols": ["create_read_tool_definition"]}
+      ],
+      "rubric": {"must_mention": ["offset=0 从首行开始", "正数 offset 的行号语义", "limit 正整数", "越界错误", "截断与续读 offset"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-read-tool-image-capability-boundary",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "tool-contracts",
+    "question_type": "capability_boundary",
+    "difficulty": "medium",
+    "user_input": "Tau 的 read 工具读到受支持图片时，如果当前模型不支持图片输入，工具会怎样处理？模型支持时成功和处理失败的结果分别包含什么？",
+    "ground_truth": {
+      "answer_points": [
+        "当 image_support.supported 明确为 False 时，不把图片内容交给模型；返回说明图片不可用、不得推断图片内容，并建议切换视觉模型的文本结果。",
+        "模型支持且处理成功时，AgentToolResult.content 包含说明文本和 ImageContent；details 记录源/处理后 MIME、字节数及图像尺寸。",
+        "图片处理失败时只返回带失败原因的文本说明，不生成 ImageContent。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/tools.py", "line_start": 256, "line_end": 303, "symbols": ["create_read_tool_definition"]}
+      ],
+      "rubric": {"must_mention": ["不支持时不发送图片", "禁止推断", "成功返回 ImageContent", "失败时仅文本结果", "details 图像元数据"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-bash-timeout-and-cancellation-state",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "tool-contracts",
+    "question_type": "error_handling",
+    "difficulty": "hard",
+    "user_input": "Tau 的 bash 工具怎样区分命令超时、工具取消和正常结束？这些状态怎样反映到返回结果？",
+    "ground_truth": {
+      "answer_points": [
+        "工具同时等待子进程完成、可选 timeout 和取消信号；timeout 或取消先发生时会终止进程，并继续收集已产生的输出。",
+        "timeout 返回 timed_out=True、cancelled=False；信号取消返回 timed_out=False、cancelled=True；正常结束两者都为 False。",
+        "返回文本追加对应的超时/取消状态块，details 保留 exit_code、timed_out、cancelled 和 duration_seconds。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/tools.py", "line_start": 613, "line_end": 700, "symbols": ["create_bash_tool_definition"]},
+        {"path": "src/tau_coding/tools.py", "line_start": 769, "line_end": 815, "symbols": ["_communicate_with_cancellation"]}
+      ],
+      "rubric": {"must_mention": ["等待完成/timeout/取消", "超时与取消标志互斥", "终止并收集输出", "结果文本和 details 状态"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-skill-discovery-precedence-and-diagnostics",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "skills",
+    "question_type": "resource_discovery",
+    "difficulty": "medium",
+    "user_input": "Tau 从多个 Skills 目录发现同名 Skill 时怎样决定最终版本？目录根部的普通 Markdown 文件和同目录重复名称又怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "按 skills_dirs 的低到高优先级加载，后加载目录中的同名 Skill 覆盖先前版本，并产生覆盖诊断。",
+        "一个 Skill 必须是含 SKILL.md 的目录；根目录裸 .md 文件不会被当作 Skill，会产生迁移提示诊断。",
+        "单个目录内重复 Skill 名称会被忽略，并产生重复名称诊断；目录条目按名称排序后处理。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/skills.py", "line_start": 45, "line_end": 91, "symbols": ["load_skills_with_diagnostics"]},
+        {"path": "src/tau_coding/skills.py", "line_start": 173, "line_end": 239, "symbols": ["_load_skills_from_dir_with_diagnostics"]}
+      ],
+      "rubric": {"must_mention": ["目录优先级及后者覆盖", "SKILL.md 目录格式", "裸 Markdown 被跳过", "同目录重复被忽略并诊断"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-skill-visibility-versus-explicit-invocation",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "skills",
+    "question_type": "capability_boundary",
+    "difficulty": "hard",
+    "user_input": "Skill 元数据中的 disable-model-invocation 会影响哪些行为？它是否也会阻止用户显式输入 `/skill:name`？",
+    "ground_truth": {
+      "answer_points": [
+        "build_skill_index 会把 disable_model_invocation=True 的 Skill 从提供给模型的可用 Skill 列表中排除；没有可见 Skill 时输出 Available skills: none。",
+        "load_skills 仍会加载该 Skill；expand_skill_command 按名称查找全部已加载 Skill，没有检查 disable_model_invocation，因此用户显式输入 /skill:name 仍可展开。",
+        "该标记控制的是模型可发现/调用入口，不是 Skill 加载或用户命令执行的总开关。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/skills.py", "line_start": 45, "line_end": 59, "symbols": ["load_skills"]},
+        {"path": "src/tau_coding/skills.py", "line_start": 94, "line_end": 113, "symbols": ["expand_skill_command"]},
+        {"path": "src/tau_coding/skills.py", "line_start": 149, "line_end": 158, "symbols": ["build_skill_index"]}
+      ],
+      "rubric": {"must_mention": ["只从模型可见索引隐藏", "仍被加载", "显式 /skill 命令仍可展开", "非全局禁用开关"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-skill-command-expansion",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "skills",
+    "question_type": "input_flow",
+    "difficulty": "medium",
+    "user_input": "用户输入 `/skill:name` 后，Tau 怎样解析名称和额外要求并构造发给 Agent 的文本？空名称或未知名称怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "先 trim 输入并识别 /skill: 前缀，再把首个空白之前的内容作为命令、余下文本作为附加要求；冒号后为空时抛 ResourceError。",
+        "按已加载 Skill 的名称查找；不存在时抛 Unknown skill 的 ResourceError。",
+        "成功时生成带 skill 名称、SKILL.md 路径、相对引用基准和 Skill 正文的 <skill> 块；非空附加要求追加在块后。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/skills.py", "line_start": 94, "line_end": 113, "symbols": ["expand_skill_command"]},
+        {"path": "src/tau_coding/skills.py", "line_start": 116, "line_end": 129, "symbols": ["format_skill_invocation"]}
+      ],
+      "rubric": {"must_mention": ["前缀和首个空白分割", "空/未知 Skill 报错", "Skill 正文及相对路径基准", "附加要求拼接"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-skills-disabled-resource-boundary",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "skills",
+    "question_type": "configuration_trace",
+    "difficulty": "medium",
+    "user_input": "CodingSessionConfig.skills_enabled=False 时，Tau 会跳过哪些资源？Prompt Template、项目上下文和 system prompt 还会不会加载？",
+    "ground_truth": {
+      "answer_points": [
+        "skills_enabled=False 时不发现 Skills，skills 与 skill diagnostics 都为空，因此没有可注入的 Skill 索引，/skill 命令也找不到 Skill。",
+        "该开关只控制 Skill discovery；Prompt Template 仍加载，项目上下文仍发现并与显式 context_files 合并，system prompt resource 仍按 system_prompt_enabled 单独处理。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/session.py", "line_start": 373, "line_end": 384, "symbols": ["CodingSessionConfig"]},
+        {"path": "src/tau_coding/session.py", "line_start": 4871, "line_end": 4910, "symbols": ["_load_session_resources"]}
+      ],
+      "rubric": {"must_mention": ["skills 及诊断为空", "仅关闭 Skill discovery", "Prompt Template 仍加载", "上下文/system prompt 独立加载"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-system-prompt-custom-context-skills",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "system-prompt",
+    "question_type": "configuration_trace",
+    "difficulty": "hard",
+    "user_input": "build_system_prompt 同时收到 custom_prompt、项目 context files 和 Skills 时，定制 Prompt 分支与默认 Prompt 分支分别保留哪些内容？Skills 在什么条件下插入？",
+    "ground_truth": {
+      "answer_points": [
+        "custom_prompt 不是 None 时以它作为主体，不拼默认工具列表、Guidelines 或 Tau 文档；仍追加 append/extra sections、项目上下文、日期和 cwd。",
+        "默认分支包含可用工具、Guidelines 和 Tau 文档，再追加 append/extra sections、项目上下文、日期和 cwd。",
+        "两个分支都只在可用工具中有 read 时注入 Skills；项目上下文通过 XML 风格的 project_context/project_instructions 包装，路径会转义。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/system_prompt.py", "line_start": 47, "line_end": 81, "symbols": ["build_system_prompt"]},
+        {"path": "src/tau_coding/system_prompt.py", "line_start": 170, "line_end": 187, "symbols": ["format_project_context"]}
+      ],
+      "rubric": {"must_mention": ["定制 Prompt 替代默认主体", "两分支保留追加部分/context/date/cwd", "read 工具是 Skills 注入条件", "项目上下文包装与转义"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-bash-output-tail-artifact",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "tool-contracts",
+    "question_type": "output_handling",
+    "difficulty": "medium",
+    "user_input": "bash 命令输出超过全局行数或字节数上限时，Agent 收到输出的哪一部分？完整输出怎样保留并让调用方定位？",
+    "ground_truth": {
+      "answer_points": [
+        "truncate_tail 按行数和字节数限制保留输出尾部；若最后一行单独超过字节限制，则从该行末尾截取。",
+        "截断时将完整输出写入临时日志，并在返回文本中注明显示范围或部分行信息及日志路径。",
+        "AgentToolResult.details 记录 truncation 元数据和 full_output_path；未截断时 full_output_path 为 None。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/tools.py", "line_start": 650, "line_end": 700, "symbols": ["create_bash_tool_definition"]},
+        {"path": "src/tau_coding/tools.py", "line_start": 860, "line_end": 901, "symbols": ["truncate_tail"]}
+      ],
+      "rubric": {"must_mention": ["保留尾部输出", "行数/字节上限", "完整输出写临时日志", "full_output_path 和 truncation details"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-provider-network-retry-before-content",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "provider",
+    "question_type": "retry_policy",
+    "difficulty": "hard",
+    "user_input": "OpenAI-compatible Provider 的 SSE 响应中途发生 HTTP 网络异常时，什么情况下会重新请求？如果已经输出部分内容呢？",
+    "ground_truth": {
+      "answer_points": [
+        "仅当 parser 尚未发出内容且 _should_retry 仍允许重试时，网络错误才进入 retry 分支。",
+        "重试分支发 ProviderRetryEvent、递增 attempt，并进行可取消的等待；等待成功后重新请求。",
+        "已经发出内容或重试耗尽时不重放请求，改发 ProviderErrorEvent 并结束流，避免重复输出部分回答。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_ai/openai_compatible.py", "line_start": 354, "line_end": 378, "symbols": ["OpenAICompatibleProvider._stream"]},
+        {"path": "src/tau_ai/openai_compatible.py", "line_start": 404, "line_end": 407, "symbols": ["OpenAICompatibleProvider._should_retry"]}
+      ],
+      "rubric": {"must_mention": ["parser.emitted_content 门槛", "max_retries 门槛", "可取消等待后重试", "已有内容后不重放而报 ProviderError"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-branch-summary-without-tools-and-file-context",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "session-branching",
+    "question_type": "control_flow",
+    "difficulty": "hard",
+    "user_input": "Tau 用模型生成 branch summary 时传给 Provider 什么输入？生成成功后怎样把分支中的文件读写轨迹补进摘要？",
+    "ground_truth": {
+      "answer_points": [
+        "没有待总结消息、Provider 返回 AssistantErrorEvent、没有 AssistantDoneEvent 或最终摘要为空时，函数返回 None。",
+        "摘要请求把序列化的分支会话和摘要指令放进一条 UserMessage，调用 Provider.stream_response 且 tools=[]。",
+        "成功后统计分支中 read 与 edit/write 的路径：只读路径进入 read-files，修改路径进入 modified-files；集合去重并排序后追加到摘要上下文。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/branch_summary.py", "line_start": 68, "line_end": 110, "symbols": ["summarize_branch_messages_with_model"]},
+        {"path": "src/tau_coding/branch_summary.py", "line_start": 195, "line_end": 222, "symbols": ["_add_branch_summary_context", "_branch_file_operations"]}
+      ],
+      "rubric": {"must_mention": ["tools=[] 单 UserMessage", "失败/空摘要返回 None", "区分只读和修改路径", "去重排序后注入摘要"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-huggingface-automatic-route-failover",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "provider",
+    "question_type": "recovery_policy",
+    "difficulty": "hard",
+    "user_input": "CodingSession 在什么条件下会对 Hugging Face inference route 自动 failover？切换路由后如何重试并报告终态？",
+    "ground_truth": {
+      "answer_points": [
+        "仅 provider_name=huggingface、inference_provider_mode=automatic、当前 route 非空，且错误是无内容输出的 retryable provider HTTP error 时触发。",
+        "失败后清除当前 inference_provider，更新配置及可用的 SessionManager 记录，再通过同一 AgentHarness continue_ 重试一次。",
+        "流程发出 AutoRetryStartEvent 和 AutoRetryEndEvent；结束时将 AgentEndEvent 转为 SessionAgentEndEvent，并在终态记录重试成功或最终错误。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_coding/session.py", "line_start": 2017, "line_end": 2056, "symbols": ["will_auto_retry", "_should_auto_failover_huggingface_route", "_reset_automatic_inference_provider_for_failover"]},
+        {"path": "src/tau_coding/session.py", "line_start": 2058, "line_end": 2122, "symbols": ["_run_huggingface_route_failover"]},
+        {"path": "src/tau_coding/session.py", "line_start": 3973, "line_end": 3983, "symbols": ["is_retryable_huggingface_route_error"]}
+      ],
+      "rubric": {"must_mention": ["Hugging Face + automatic + route 条件", "无内容输出的可重试 HTTP 错误", "清除 route 并更新 SessionManager", "只重试一次", "AutoRetry 终态事件"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "tau-openai-session-affinity-header-format",
+    "repository_id": "tau-v0.4.4",
+    "suite_type": "provider",
+    "question_type": "configuration_trace",
+    "difficulty": "medium",
+    "user_input": "OpenAI-compatible Provider 怎样根据 session_id 和 affinity_format 写会话亲和请求头？缺少参数或格式不识别时会怎样？",
+    "ground_truth": {
+      "answer_points": [
+        "session_id 或 affinity_format 任一为 None 时不添加亲和请求头。",
+        "affinity_format=openrouter 时写入 x-session-id；openai 时写入 session_id。",
+        "其他格式不会写入任何头；Provider 在共享请求 envelope 中调用该 helper 应用所选格式。"
+      ],
+      "expected_evidence": [
+        {"path": "src/tau_ai/openai_compatible.py", "line_start": 247, "line_end": 270, "symbols": ["OpenAICompatibleProvider._stream"]},
+        {"path": "src/tau_ai/openai_compatible.py", "line_start": 421, "line_end": 433, "symbols": ["_apply_session_affinity_headers"]}
+      ],
+      "rubric": {"must_mention": ["两个输入都需要", "openrouter 对应 x-session-id", "openai 对应 session_id", "未知格式不写头"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd"}
+  },
+  {
+    "case_id": "fastapi-dependency-cache-semantics",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "dependency-injection",
+    "question_type": "cache_semantics",
+    "difficulty": "hard",
+    "user_input": "同一请求中重复出现相同依赖时，Depends.use_cache 怎样影响求值？当 use_cache=False 但依赖缓存已有该键时，结果会不会覆盖缓存？",
+    "ground_truth": {
+      "answer_points": [
+        "solve_dependencies 先递归求解子依赖，再依据 _get_cache_key 查依赖缓存。",
+        "use_cache=True 且键已存在时直接复用缓存值，不再调用依赖函数；否则按生成器、协程或同步函数路径执行。",
+        "执行完成后仅在键尚不存在时写入缓存，所以 use_cache=False 会重新执行，但不会覆盖之前已存的缓存值。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/dependencies/utils.py", "line_start": 619, "line_end": 680, "symbols": ["solve_dependencies"]}
+      ],
+      "rubric": {"must_mention": ["递归子依赖", "use_cache=True 命中复用", "False 时重新执行", "已有缓存不会被覆盖"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-yield-dependency-stack-scope",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "dependency-injection",
+    "question_type": "resource_lifecycle",
+    "difficulty": "hard",
+    "user_input": "FastAPI 求解 yield/generator 依赖时，scope='function' 和 request scope 分别使用哪个 AsyncExitStack？这些 stack 从哪里取得？",
+    "ground_truth": {
+      "answer_points": [
+        "solve_dependencies 从 request.scope 读取 fastapi_inner_astack 与 fastapi_function_astack，并断言两者都是 AsyncExitStack。",
+        "遇到同步或异步生成器依赖时，scope='function' 选择 function_astack；其他 scope（含默认 request scope）选择 request_astack，再交给 _solve_generator 注册生命周期。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/dependencies/utils.py", "line_start": 601, "line_end": 608, "symbols": ["solve_dependencies"]},
+        {"path": "fastapi/dependencies/utils.py", "line_start": 662, "line_end": 672, "symbols": ["solve_dependencies"]},
+        {"path": "fastapi/middleware/asyncexitstack.py", "line_start": 8, "line_end": 18, "symbols": ["AsyncExitStackMiddleware"]}
+      ],
+      "rubric": {"must_mention": ["两种 stack 从 request.scope 读取", "function scope 使用 function stack", "其他 scope 使用 request stack", "交由生成器生命周期 helper 处理"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-response-model-validation-boundary",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "response-handling",
+    "question_type": "validation_and_serialization",
+    "difficulty": "medium",
+    "user_input": "FastAPI serialize_response 收到 response field 时如何处理返回值和校验错误？没有 response field 时走什么路径？",
+    "ground_truth": {
+      "answer_points": [
+        "有 field 时先校验 response_content，校验失败抛 ResponseValidationError，并携带 errors、原始 body 和 endpoint context。",
+        "校验成功后用 field 的 serializer 序列化，并应用 include/exclude、alias、exclude_unset/defaults/none 配置。",
+        "没有 response field 时直接通过 jsonable_encoder 编码 response_content。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/routing.py", "line_start": 308, "line_end": 348, "symbols": ["serialize_response"]}
+      ],
+      "rubric": {"must_mention": ["先验证 response field", "ResponseValidationError 内容", "成功时按配置序列化", "无 field 走 jsonable_encoder"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-apiroute-builds-request-handler",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "routing",
+    "question_type": "initialization_flow",
+    "difficulty": "medium",
+    "user_input": "APIRoute 初始化时如何把路由配置转成可调用的 ASGI app？get_route_handler 会把哪些运行所需配置传给 get_request_handler？",
+    "ground_truth": {
+      "answer_points": [
+        "APIRoute.__init__ 先用 _populate_api_route_state 构建路由状态（包括依赖与 body/response 字段），再把 request_response(self.get_route_handler()) 保存为 self.app。",
+        "get_route_handler 将 dependant、body/response 字段、状态码、response class、序列化选项、dependency override provider、body embedding 和 content-type 策略等传给 get_request_handler。",
+        "因此请求处理闭包在路由初始化时由固定的 APIRoute 配置组装，而不是每次请求重新解析装饰器参数。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/routing.py", "line_start": 1226, "line_end": 1256, "symbols": ["APIRoute.__init__"]},
+        {"path": "fastapi/routing.py", "line_start": 1258, "line_end": 1282, "symbols": ["APIRoute.get_route_handler"]}
+      ],
+      "rubric": {"must_mention": ["populate route state", "request_response 包装", "handler 参数转发", "路由配置用于构造请求闭包"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-security-scopes-flow",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "security",
+    "question_type": "scope_propagation",
+    "difficulty": "hard",
+    "user_input": "Security 声明的 scopes 怎样沿依赖树传递？依赖函数中的 SecurityScopes 参数最终收到什么列表？",
+    "ground_truth": {
+      "answer_points": [
+        "Security 是 Depends 的子类并携带自身 scopes；get_dependant 把父 scopes 与当前 Security scopes 传入子依赖。",
+        "构造 Dependant 时保留 parent_oauth_scopes 和 own_oauth_scopes；_get_oauth_scopes 按父级后本级的顺序合并，并去重但保留先后顺序。",
+        "solve_dependencies 遇到 SecurityScopes 参数时，把该 Dependant 汇总出的 scopes 注入到依赖函数参数。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/params.py", "line_start": 745, "line_end": 754, "symbols": ["Depends", "Security"]},
+        {"path": "fastapi/dependencies/utils.py", "line_start": 290, "line_end": 330, "symbols": ["get_dependant"]},
+        {"path": "fastapi/dependencies/models.py", "line_start": 71, "line_end": 80, "symbols": ["_get_oauth_scopes"]},
+        {"path": "fastapi/dependencies/utils.py", "line_start": 721, "line_end": 724, "symbols": ["solve_dependencies"]}
+      ],
+      "rubric": {"must_mention": ["Security 继承 Depends", "父级与本级 scopes", "合并去重且保序", "注入 SecurityScopes 参数"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-body-embedding-and-validation",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "request-validation",
+    "question_type": "body_shape",
+    "difficulty": "hard",
+    "user_input": "FastAPI 怎样决定多个 Body 参数是否需要嵌入成对象？request_body_to_args 对单个非嵌入字段和嵌入字段分别怎样取值、标记错误位置？",
+    "ground_truth": {
+      "answer_points": [
+        "body 字段有多个不同名称、单个字段显式 embed=True，或某些标量 Form/File 场景时会启用 embedding；无字段或普通单一字段通常不嵌入。",
+        "单个非嵌入字段直接用整个收到的 body 校验，错误位置为 ('body',)。",
+        "嵌入字段从 body mapping 按 validation alias 逐项取值，错误位置为 ('body', alias)；FormData 会先按字段提取，非 mapping body 会产生缺字段错误。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/dependencies/utils.py", "line_start": 888, "line_end": 909, "symbols": ["_should_embed_body_fields"]},
+        {"path": "fastapi/dependencies/utils.py", "line_start": 951, "line_end": 998, "symbols": ["request_body_to_args"]}
+      ],
+      "rubric": {"must_mention": ["嵌入判定条件", "单字段整体校验与 body 定位", "嵌入时按 alias 解包", "FormData 或非 mapping 错误"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-middleware-stack-and-exception-handlers",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "middleware",
+    "question_type": "stack_order",
+    "difficulty": "hard",
+    "user_input": "FastAPI build_middleware_stack 怎样分配 500/Exception handler 与其他异常处理器？最终的外到内中间件顺序是什么，AsyncExitStack 为什么放在用户中间件内侧？",
+    "ground_truth": {
+      "answer_points": [
+        "500 或 Exception 键对应的 handler 单独交给 ServerErrorMiddleware；其他异常处理器交给 ExceptionMiddleware。",
+        "从外到内为 ServerErrorMiddleware、ExceptionTelemetryMiddleware、用户中间件、ExceptionMiddleware、AsyncExitStackMiddleware，最后到 router；实现以列表反向包装形成该顺序。",
+        "AsyncExitStack 放在用户中间件内侧，使它与用户中间件创建的 contextvars task context 一致，并负责相关资源关闭。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/applications.py", "line_start": 1054, "line_end": 1105, "symbols": ["FastAPI.build_middleware_stack"]}
+      ],
+      "rubric": {"must_mention": ["500/Exception 分到 ServerErrorMiddleware", "其他异常处理器交给 ExceptionMiddleware", "中间件外到内顺序", "AsyncExitStack 与 contextvars 的原因"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-backgroundtasks-dependency-injection",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "dependency-injection",
+    "question_type": "state_sharing",
+    "difficulty": "medium",
+    "user_input": "路径函数或依赖声明 BackgroundTasks 后，FastAPI 在依赖求解中怎样创建/共享它？它怎样进入最终响应？",
+    "ground_truth": {
+      "answer_points": [
+        "依赖分析把 BackgroundTasks 参数名记录在 Dependant.background_tasks_param_name。",
+        "solve_dependencies 接收并向子依赖传递现有 background_tasks；尚未创建时会实例化 BackgroundTasks，再注入到对应参数并随 SolvedDependency 返回。",
+        "响应参数构造把同一个 background_tasks 对象作为 Response 的 background 值，供响应发送后的后台任务执行。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/dependencies/utils.py", "line_start": 350, "line_end": 367, "symbols": ["add_non_field_param_to_dependency"]},
+        {"path": "fastapi/dependencies/utils.py", "line_start": 715, "line_end": 729, "symbols": ["solve_dependencies"]},
+        {"path": "fastapi/routing.py", "line_start": 367, "line_end": 382, "symbols": ["_build_response_args"]}
+      ],
+      "rubric": {"must_mention": ["依赖分析记录参数名", "求解过程共享/必要时创建", "注入并返回同一对象", "作为 Response.background"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-request-body-content-type-boundary",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "request-validation",
+    "question_type": "content_type_handling",
+    "difficulty": "hard",
+    "user_input": "FastAPI 读取路由请求体时，哪些 Content-Type 会按 JSON 解析？严格模式下缺少 Content-Type 怎样处理？JSON 解码失败和其他解析异常分别变成什么错误？",
+    "ground_truth": {
+      "answer_points": [
+        "Form body 走 request.form() 并把关闭表单/上传文件的回调注册到 middleware AsyncExitStack。",
+        "非表单 body 先读取 bytes；Content-Type 为 application/json 或 application/*+json 时解析 JSON。无 Content-Type 只有 strict_content_type=False 才尝试 JSON，否则保留原始 bytes。",
+        "JSONDecodeError 转成包含 json_invalid、body 位置和错误上下文的 RequestValidationError；其他解析异常包装成 HTTPException 400。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/routing.py", "line_start": 438, "line_end": 463, "symbols": ["get_request_handler"]},
+        {"path": "fastapi/routing.py", "line_start": 464, "line_end": 487, "symbols": ["get_request_handler"]}
+      ],
+      "rubric": {"must_mention": ["Form 独立读取并注册关闭", "application/json 和 +json", "严格模式缺 Content-Type 保留 bytes", "JSON 错误与其他错误区分"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-dependency-override-rebuild",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "dependency-injection",
+    "question_type": "runtime_override",
+    "difficulty": "hard",
+    "user_input": "solve_dependencies 在发现 dependency_overrides 时怎样替换原依赖？替代函数是否直接复用原 Dependant 描述？",
+    "ground_truth": {
+      "answer_points": [
+        "从 dependency_overrides_provider.dependency_overrides 按原依赖 callable 查找替代 callable；未配置替代时仍用原 callable。",
+        "存在替代项时通过 get_dependant 重新分析替代函数，并保留原 path、name、父级 OAuth scopes 和 scope。",
+        "随后递归求解新的 Dependant，同时继续传递同一个 dependency_cache、request/body、override provider 和 AsyncExitStack。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/dependencies/utils.py", "line_start": 619, "line_end": 651, "symbols": ["solve_dependencies"]}
+      ],
+      "rubric": {"must_mention": ["按原 callable 查 override", "重建而非复用旧 Dependant", "保留 path/name/scopes/scope", "递归时保留共享依赖状态"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-openapi-route-version-cache",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "openapi",
+    "question_type": "cache_invalidation",
+    "difficulty": "hard",
+    "user_input": "FastAPI.openapi() 何时复用缓存、何时重新生成？APIRouter 的 routes version 怎样把嵌套 included router 的变化纳入判断？",
+    "ground_truth": {
+      "answer_points": [
+        "openapi_schema 已存在且缓存的 _openapi_routes_version 等于当前 router routes version 时直接返回缓存。",
+        "缓存不存在或 version 不同就调用 get_openapi，使用应用元数据、routes、webhooks 和 tags 等信息重建，并保存新的 routes version。",
+        "_get_routes_version 把当前 router 的版本与其 _IncludedRouter 指向的原始 router 版本递归相加，并用 seen 集合避免重复遍历循环引用。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/applications.py", "line_start": 1107, "line_end": 1140, "symbols": ["FastAPI.openapi"]},
+        {"path": "fastapi/routing.py", "line_start": 2617, "line_end": 2631, "symbols": ["APIRouter._get_routes_version"]}
+      ],
+      "rubric": {"must_mention": ["schema 缓存与 version 比较", "变化后重新 get_openapi", "included router 递归计入", "seen 防重复/循环"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-router-lifespan-state-merge",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "lifespan",
+    "question_type": "state_merge_order",
+    "difficulty": "hard",
+    "user_input": "APIRouter.include_router 合并父子 router 的 lifespan 时，两个上下文的进入/退出顺序是什么？二者返回了同名 state key 时谁覆盖谁？",
+    "ground_truth": {
+      "answer_points": [
+        "include_router 添加 included-router 记录后，用 _merge_lifespan_context 合并当前 router 与被包含 router 的 lifespan_context。",
+        "merged_lifespan 先进入 original_context，再进入 nested_context；离开时按 async with 的反向顺序先退出 nested，再退出 original。",
+        "两边 state 都为 None 时返回 None；否则先合并 nested state，再合并 original state，所以冲突 key 由 original（父级/当前）值覆盖。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/routing.py", "line_start": 240, "line_end": 254, "symbols": ["_merge_lifespan_context"]},
+        {"path": "fastapi/routing.py", "line_start": 3390, "line_end": 3400, "symbols": ["APIRouter.include_router"]}
+      ],
+      "rubric": {"must_mention": ["include_router 调用 lifespan merge", "original 先进入/nested 后进入", "逆序退出", "original state 覆盖同名 nested key"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-included-route-metadata-precedence",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "routing",
+    "question_type": "configuration_merge",
+    "difficulty": "hard",
+    "user_input": "被 include_router 包含的 APIRoute 怎样合并 include 配置与路由自身配置？请说明 tags、dependencies、responses、deprecated、include_in_schema 和 response_class 的规则。",
+    "ground_truth": {
+      "answer_points": [
+        "effective route 的 path 由 include_context.path_for 计算；tags 与 dependencies 按 include 配置在前、路由自身配置在后拼接。",
+        "responses 以 include responses 为底、route.responses 覆盖同状态码；deprecated 为 route.deprecated 或 include_context.deprecated，include_in_schema 要求两边都为 True。",
+        "response_class 按 route 显式值、included_router 默认值、当前 include 默认值的顺序取第一个非 Default 值。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/routing.py", "line_start": 1462, "line_end": 1505, "symbols": ["_EffectiveRouteContext.from_api_route"]}
+      ],
+      "rubric": {"must_mention": ["prefix path 派生", "tags/dependencies include 在前", "route responses 覆盖", "deprecated OR 与 schema AND", "response_class 三层优先级"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-included-router-effective-route-cache",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "routing",
+    "question_type": "cache_invalidation",
+    "difficulty": "hard",
+    "user_input": "_IncludedRouter.effective_candidates 怎样缓存展开后的路由？原 router 版本变化或包含子 router 时，缓存怎样更新？",
+    "ground_truth": {
+      "answer_points": [
+        "先比较 original_router._get_routes_version() 与缓存版本；相同则直接返回已构造的 effective candidates。",
+        "版本不同时进入 lock 后再次检查版本，避免并发重复构建；遍历原 router routes 并构造有效路由上下文。",
+        "遇到嵌套 _IncludedRouter 时组合 include_context 并创建子分支；完成后缓存候选列表和对应 routes version。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/routing.py", "line_start": 1638, "line_end": 1661, "symbols": ["_IncludedRouter.effective_candidates"]}
+      ],
+      "rubric": {"must_mention": ["routes version 快速命中", "lock 内二次检查", "嵌套 include context 合并", "保存候选和版本"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-sse-stream-item-serialization",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "streaming",
+    "question_type": "serialization_boundary",
+    "difficulty": "hard",
+    "user_input": "FastAPI 的 SSE 路由收到 ServerSentEvent 与普通对象时，序列化和 stream_item_field 校验有什么区别？同步生成器又怎样转成异步流？",
+    "ground_truth": {
+      "answer_points": [
+        "ServerSentEvent 由用户控制事件结构：raw_data 优先，否则 data 取 model_dump_json 或 jsonable_encoder；保留 event/id/retry/comment，并跳过 stream_item_field 校验。",
+        "普通对象经 _serialize_data；若配置 stream_item_field 则先校验并序列化，否则 jsonable_encoder 后转 JSON，再包装进 SSE data 字段。",
+        "异步生成器直接使用 __aiter__；同步生成器通过 iterate_in_threadpool 转成异步迭代器。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/routing.py", "line_start": 541, "line_end": 577, "symbols": ["get_request_handler"]}
+      ],
+      "rubric": {"must_mention": ["ServerSentEvent 绕过 item field 校验", "raw_data/data 区别", "普通对象走 stream_item_field/JSON", "sync generator 使用线程池迭代"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "fastapi-asgi-root-path-and-lifespan-dispatch",
+    "repository_id": "fastapi-0.143.0",
+    "suite_type": "application-lifecycle",
+    "question_type": "asgi_dispatch",
+    "difficulty": "medium",
+    "user_input": "FastAPI.__call__ 入口怎样处理配置的 root_path？ASGI lifespan scope 与普通 HTTP/WebSocket scope 分别走什么分支？",
+    "ground_truth": {
+      "answer_points": [
+        "若应用配置了 root_path，入口先写入 scope['root_path']。",
+        "lifespan scope 通过 FastAPI telemetry lifespan wrapper 调用 Starlette 父类 ASGI app，完成后直接返回。",
+        "其他类型或 telemetry 已存在/未启用的 scope 直接走父类；启用 telemetry 的 HTTP/WebSocket 请求先确保 middleware_stack 已构建，再经 NativeTelemetry 包装调用父类。"
+      ],
+      "expected_evidence": [
+        {"path": "fastapi/applications.py", "line_start": 1197, "line_end": 1225, "symbols": ["FastAPI.__call__"]}
+      ],
+      "rubric": {"must_mention": ["root_path 写入 scope", "lifespan 走 telemetry wrapper 后返回", "其他/已包装 scope 走父类", "首次 telemetry 请求惰性构建 middleware"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "f5c6e9b4f9cadc1bf0f9a1fd672e621206b63007"}
+  },
+  {
+    "case_id": "django-oscar-basket-add-product-line-identity",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "basket",
+    "question_type": "line_creation_and_validation",
+    "difficulty": "hard",
+    "user_input": "AbstractBasket.add_product 怎样校验价格、币种和 stockrecord？同一商品带不同 options 时怎样决定新增行还是增加现有行数量？",
+    "ground_truth": {
+      "answer_points": [
+        "先通过 strategy 获取 stock_info；价格不存在、与 basket currency 冲突或缺少 stockrecord 时抛 ValueError。",
+        "line_reference 基于 product id 和 stockrecord id；有 options 时先按 option 表示排序，再对 options 表示计算 CRC32，因此不同定制项可以区分 basket line。",
+        "get_or_create 新行时以非负 quantity 和价格/税务数据作 defaults，并创建 option attributes；已存在时把 quantity 与新增量相加并限制不低于零，最后清除已应用的 offer 状态。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/basket/abstract_models.py", "line_start": 238, "line_end": 313, "symbols": ["AbstractBasket.add_product"]},
+        {"path": "src/oscar/apps/basket/abstract_models.py", "line_start": 427, "line_end": 440, "symbols": ["AbstractBasket._create_line_reference"]}
+      ],
+      "rubric": {"must_mention": ["价格/币种/stockrecord 校验", "product+stockrecord+options 区分行", "创建与累加数量两分支", "属性与 offer 状态更新"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-saved-basket-merge-policy",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "basket",
+    "question_type": "merge_state_transition",
+    "difficulty": "medium",
+    "user_input": "Saved basket 合并到当前 basket 时，两个 basket 中相同 line_reference 的数量怎样处理？源 basket 和 voucher 会怎样变化？",
+    "ground_truth": {
+      "answer_points": [
+        "merge_line 用 line_reference 查目标 basket：不存在时直接把原 line 改挂到目标 basket。",
+        "已存在时 add_quantities=True 就相加；False 就保留两者较大数量；保存目标行后删除源行，并使目标 basket 的行缓存失效。",
+        "merge 完所有行后把源 basket 标为 MERGED、记录 date_merged 并保存，再把源 basket 的 vouchers 移到目标 basket。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/basket/abstract_models.py", "line_start": 334, "line_end": 380, "symbols": ["AbstractBasket.merge_line", "AbstractBasket.merge"]}
+      ],
+      "rubric": {"must_mention": ["按 line_reference 匹配", "相加与取 max 两种模式", "源重复行删除/缓存失效", "源 basket 状态及 voucher 迁移"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-count-condition-consumption",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "offers",
+    "question_type": "condition_and_consumption",
+    "difficulty": "hard",
+    "user_input": "CountCondition 怎样判断篮子满足数量条件？offer benefit 已影响部分商品时，consume_items 怎样避免重复消耗并选择要消耗的行？",
+    "ground_truth": {
+      "answer_points": [
+        "is_satisfied 只累计 can_apply_condition 的 basket line，并按 quantity_without_offer_discount 计数；达到 condition.value 即返回 True。",
+        "consume_items 先从 affected_lines 汇总已被 benefit 消耗的数量，只再消耗 max(0, value - 已消耗数量)。",
+        "剩余数量按 get_applicable_lines(..., most_expensive_first=True) 顺序，通过 line.consume 消耗，直到达到目标或没有可用行。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/offer/conditions.py", "line_start": 44, "line_end": 54, "symbols": ["CountCondition.is_satisfied"]},
+        {"path": "src/oscar/apps/offer/conditions.py", "line_start": 81, "line_end": 105, "symbols": ["CountCondition.consume_items"]}
+      ],
+      "rubric": {"must_mention": ["只计可适用行及未打折数量", "达到阈值即满足", "扣除 affected_lines 已消耗数", "most_expensive_first 再 line.consume"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-shipping-methods-and-offers",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "shipping",
+    "question_type": "selection_and_decoration",
+    "difficulty": "medium",
+    "user_input": "Shipping Repository 对无需配送的 basket、普通 basket 和带配送折扣的 basket 分别怎样选择/装饰 ShippingMethod？默认配送方式怎样确定？",
+    "ground_truth": {
+      "answer_points": [
+        "默认 methods 只有 Free；若 basket.is_shipping_required() 为 False，直接返回 NoShippingRequired，不再查询普通方法。",
+        "需要配送时调用 get_available_shipping_methods；basket 有 shipping discounts 才调用 apply_shipping_offers，默认只使用 basket.shipping_discounts[0] 中的 offer。",
+        "get_default_shipping_method 取结果列表第一项，空列表则抛 ImproperlyConfigured；折扣包装跳过零运费，并按是否已知税额选择 TaxInclusive 或 TaxExclusive wrapper。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/shipping/repository.py", "line_start": 24, "line_end": 66, "symbols": ["Repository.get_shipping_methods", "Repository.get_default_shipping_method"]},
+        {"path": "src/oscar/apps/shipping/repository.py", "line_start": 78, "line_end": 105, "symbols": ["Repository.apply_shipping_offers", "Repository.apply_shipping_offer"]}
+      ],
+      "rubric": {"must_mention": ["无需配送返回 NoShippingRequired", "普通方法与 shipping offer 分支", "默认取第一项/空列表错误", "零运费不包装及税务 wrapper 差异"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-coverage-condition-distinct-products",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "offers",
+    "question_type": "distinct_item_condition",
+    "difficulty": "hard",
+    "user_input": "CoverageCondition 如何计算 distinct products，而不是简单累计数量？折扣应用后又怎样避免重复消耗同一商品？",
+    "ground_truth": {
+      "answer_points": [
+        "is_satisfied 只考虑可用于 offer discount 且满足 range 条件的行，以 product.id 去重；达到 condition.value 个不同商品即满足。",
+        "consume_items 从 affected_lines 中收集已消耗商品，剩余目标为 condition.value 减去已消耗商品数。",
+        "继续遍历符合条件且仍可用于折扣的行，跳过已消耗商品，每个新商品只 consume(1)，达到目标后停止。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/offer/conditions.py", "line_start": 136, "line_end": 149, "symbols": ["CoverageCondition.is_satisfied"]},
+        {"path": "src/oscar/apps/offer/conditions.py", "line_start": 171, "line_end": 202, "symbols": ["CoverageCondition.is_partially_satisfied", "CoverageCondition.consume_items"]}
+      ],
+      "rubric": {"must_mention": ["按 product.id distinct 计数", "available/applicable 条件", "排除 affected_lines 已消费商品", "每个商品最多消费一个单位"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-percentage-benefit-caps",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "offers",
+    "question_type": "discount_calculation",
+    "difficulty": "hard",
+    "user_input": "PercentageDiscountBenefit.apply 如何共同受 discount_percent、max_affected_items 和 max_total_discount 限制？已被当前 offer 折扣过的数量怎样影响额度？",
+    "ground_truth": {
+      "answer_points": [
+        "discount_percent 未提供时使用 benefit.value，并将百分比上限限制为 100%。",
+        "遍历 applicable lines 时先把 quantity_with_offer_discount 计入 affected_items；到 max_affected_items 或可用总折扣为零时停止。",
+        "新影响数量不超过 line.quantity_without_offer_discount 和剩余额度；单行折扣受 max_total_discount 剩余额度约束，最后返回按 basket.currency 舍入后的 BasketDiscount。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/offer/benefits.py", "line_start": 67, "line_end": 113, "symbols": ["PercentageDiscountBenefit.apply"]}
+      ],
+      "rubric": {"must_mention": ["默认百分比及 100% 上限", "已折扣数量占 affected 上限", "可用数量上限", "总折扣额度逐行递减并按币种舍入"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-absolute-benefit-allocation",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "offers",
+    "question_type": "discount_allocation",
+    "difficulty": "hard",
+    "user_input": "AbsoluteDiscountBenefit.apply 怎样计算可分配的总折扣，并把折扣分到多条 basket line？为何最后一行采用剩余差额？",
+    "ground_truth": {
+      "answer_points": [
+        "先选 applicable lines，并受 max_affected_items 与各行未被当前 offer 折扣的数量限制；累计受影响商品的总价值。",
+        "总折扣取 benefit 的 discount_amount、受影响商品总价值、可选 max_total_discount 三者中的最小值；结果为零时返回 ZERO_DISCOUNT。",
+        "其余折扣按各行价值占 affected_items_total 的比例加权舍入；最后一行使用总折扣减已分配金额的差额，以消除累计舍入误差。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/offer/benefits.py", "line_start": 143, "line_end": 203, "symbols": ["AbsoluteDiscountBenefit.apply"]}
+      ],
+      "rubric": {"must_mention": ["受影响商品金额和数量限制", "总折扣取多个上限最小值", "按价值比例分配", "最后一行使用残差防舍入误差"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-offer-applicator-order-and-repetition",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "offers",
+    "question_type": "application_order",
+    "difficulty": "hard",
+    "user_input": "Applicator 怎样合并并排序 session、basket/voucher、user 和 site offers？单个 offer 会重复应用到什么时候，成功结果存在哪里？",
+    "ground_truth": {
+      "answer_points": [
+        "get_offers 合并 session、basket、user、site offers，并按 priority 从高到低排序。",
+        "apply_offers 对每个 offer 循环调用 apply_benefit，直到达到 owner 的 max applications、结果不成功，或 result.is_final 为 True。",
+        "成功结果加入 OfferApplications；所有 offer 处理完后把该集合保存到 basket.offer_applications，供模板显示。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/offer/applicator.py", "line_start": 14, "line_end": 64, "symbols": ["Applicator.apply", "Applicator.apply_offers", "Applicator.get_offers"]}
+      ],
+      "rubric": {"must_mention": ["四类 offer 来源", "priority 降序", "max applications/失败/final 三种停止条件", "成功结果存 basket"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-order-creator-transaction-boundary",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "order-placement",
+    "question_type": "transaction_and_side_effects",
+    "difficulty": "hard",
+    "user_input": "OrderCreator.place_order 在哪些检查后进入事务？事务内怎样处理 voucher、discount、order line 和库存？order_placed signal 在事务内还是事务提交后发送？",
+    "ground_truth": {
+      "answer_points": [
+        "空 basket 与重复 order number 在进入 transaction.atomic 前拒绝；初始 status 可从配置读取。",
+        "事务内创建 Order、锁定并重新校验 vouchers、应用 deferred benefits 并记录 discount/voucher usage；order lines 按 basket 顺序创建。",
+        "库存更新按 stockrecord_id 排序，以稳定锁顺序避免并发死锁；退出 atomic 后才发送 order_placed signal 并返回 order。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/order/utils.py", "line_start": 44, "line_end": 139, "symbols": ["OrderCreator.place_order"]}
+      ],
+      "rubric": {"must_mention": ["atomic 前空篮/重复号检查", "事务内 voucher/discount/order 记录", "basket 顺序建行", "按 stockrecord 排序更新", "signal 在事务外"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-order-line-audit-snapshot",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "order-placement",
+    "question_type": "persistence_snapshot",
+    "difficulty": "medium",
+    "user_input": "OrderCreator.create_line_models 从 BasketLine 复制哪些合作伙伴、商品、价格和库存分配信息？如果没有 stockrecord 会怎样？",
+    "ground_truth": {
+      "answer_points": [
+        "缺少 stockrecord 时抛 UnableToPlaceOrder。",
+        "Order Line 保存 partner/name/SKU、stockrecord、product/title/UPC 和购买 quantity，作为订单时的可审计快照。",
+        "保存折后与折前含税/未税行金额、unit prices、tax_code 和 num_allocated；可应用初始 line status 配置或 extra fields，并继续创建价格、属性、折扣及扩展关联模型。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/order/utils.py", "line_start": 196, "line_end": 249, "symbols": ["OrderCreator.create_line_models"]}
+      ],
+      "rubric": {"must_mention": ["无 stockrecord 失败", "伙伴与产品身份快照", "折前/折后价格和税", "num_allocated", "后续创建关联模型"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-checkout-payment-detail-deferred-save",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "checkout",
+    "question_type": "extension_seam",
+    "difficulty": "medium",
+    "user_input": "OrderPlacementMixin 怎样让项目自定义支付处理，并把支付 source/event 与后来创建的 Order 关联保存？",
+    "ground_truth": {
+      "answer_points": [
+        "默认 handle_payment 是无操作扩展点；项目实现可调用 add_payment_source/add_payment_event，把未保存的对象暂存在 mixin 实例列表。",
+        "add_payment_event 先 get_or_create PaymentEventType，再暂存 PaymentEvent；支付 source 和 event 此时尚未关联订单。",
+        "place_order 先由 OrderCreator 创建 Order，再调用 save_payment_details；该方法关联并保存事件、为每条 order line 建 PaymentEventQuantity，再关联并保存 payment sources。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/checkout/mixins.py", "line_start": 49, "line_end": 80, "symbols": ["OrderPlacementMixin.handle_payment", "OrderPlacementMixin.add_payment_source", "OrderPlacementMixin.add_payment_event"]},
+        {"path": "src/oscar/apps/checkout/mixins.py", "line_start": 162, "line_end": 177, "symbols": ["OrderPlacementMixin.place_order"]},
+        {"path": "src/oscar/apps/checkout/mixins.py", "line_start": 225, "line_end": 258, "symbols": ["OrderPlacementMixin.save_payment_details", "OrderPlacementMixin.save_payment_events", "OrderPlacementMixin.save_payment_sources"]}
+      ],
+      "rubric": {"must_mention": ["handle_payment 可覆盖且默认 no-op", "source/event 暂存", "Order 创建后再关联", "event quantity 按 order line 保存"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-product-structure-and-class-inheritance",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "catalogue",
+    "question_type": "domain_model",
+    "difficulty": "medium",
+    "user_input": "Oscar Product 怎样判断 standalone/parent/child 结构？child 的 product class 和 parent 的 public children 查询怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "is_standalone、is_parent、is_child 分别直接比较 Product.structure 与对应常量。",
+        "get_product_class 对 child 返回 parent.product_class；非 child 返回自己的 product_class。",
+        "get_public_children 优先返回预取缓存 _prefetched_public_children；不存在时执行 children.public() 查询。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/catalogue/abstract_models.py", "line_start": 648, "line_end": 658, "symbols": ["AbstractProduct.is_standalone", "AbstractProduct.is_parent", "AbstractProduct.is_child"]},
+        {"path": "src/oscar/apps/catalogue/abstract_models.py", "line_start": 749, "line_end": 778, "symbols": ["AbstractProduct.get_product_class", "AbstractProduct.get_public_children"]}
+      ],
+      "rubric": {"must_mention": ["三类结构由 structure 判断", "child 继承 parent product_class", "预取缓存优先", "否则只查 public children"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-structured-purchase-info",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "catalogue-pricing",
+    "question_type": "strategy_composition",
+    "difficulty": "hard",
+    "user_input": "Structured strategy 对普通商品与 parent product 分别怎样构造 PurchaseInfo？parent 的 children stockrecords 如何取得并减少查询？",
+    "ground_truth": {
+      "answer_points": [
+        "fetch_for_product 在没有显式 stockrecord 时调用 select_stockrecord，再调用 pricing_policy 与 availability_policy，组合 price、availability、stockrecord 返回 PurchaseInfo。",
+        "fetch_for_parent 调用 select_children_stockrecords，再调用 parent_pricing_policy 与 parent_availability_policy，返回的 PurchaseInfo.stockrecord 为 None。",
+        "select_children_stockrecords 使用 product.get_public_children；结果是 QuerySet 时先 prefetch_related('stockrecords')，再为每个 child 选择 stockrecord。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/partner/strategy.py", "line_start": 121, "line_end": 168, "symbols": ["Structured.fetch_for_product", "Structured.fetch_for_parent", "Structured.select_children_stockrecords"]}
+      ],
+      "rubric": {"must_mention": ["普通 product 三项 PurchaseInfo", "parent 专用 policies 且 record=None", "public children", "QuerySet 预取 stockrecords"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-stock-required-availability-policy",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "catalogue-pricing",
+    "question_type": "availability_policy",
+    "difficulty": "medium",
+    "user_input": "StockRequired strategy 对没有 stockrecord、无需跟踪库存和需要跟踪库存的商品分别返回什么 availability policy？父商品何时可购买？",
+    "ground_truth": {
+      "answer_points": [
+        "没有 stockrecord 时返回 Unavailable；product class 不 track_stock 时返回始终允许购买的 Available；否则用 stockrecord.net_stock_level 创建 StockRequired availability。",
+        "StockRequired.is_purchase_permitted 在库存小于等于零时拒绝，在请求数量大于可用量时拒绝并返回上限原因，其余情况允许。",
+        "父商品只要任一 child 的 availability.is_available_to_buy 为 True，就视为 Available；全部 child 都不可买才返回 Unavailable。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/partner/strategy.py", "line_start": 217, "line_end": 238, "symbols": ["StockRequired.availability_policy", "StockRequired.parent_availability_policy"]},
+        {"path": "src/oscar/apps/partner/availability.py", "line_start": 73, "line_end": 95, "symbols": ["StockRequired.is_purchase_permitted"]}
+      ],
+      "rubric": {"must_mention": ["无 stockrecord 不可用", "不跟踪库存可购买", "库存数量上限", "父商品任一子商品可用即可可用"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-order-line-reorder-validation",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "order-placement",
+    "question_type": "availability_recheck",
+    "difficulty": "hard",
+    "user_input": "历史订单行重新加入 basket 前，Oscar 怎样检查商品和 stockrecord 仍可用？为什么要把当前 basket 中相同选项的数量也计入目标数量？",
+    "ground_truth": {
+      "answer_points": [
+        "商品已删除或 strategy.fetch_for_product 找不到 stockrecord 时返回不可重下单及商品不可用原因。",
+        "从历史 order line attributes 重建 option/value 列表，并以同一 product、stockrecord、options 查询当前 basket 已有数量。",
+        "availability 检查的 desired_qty 是历史订单行 quantity 加当前 basket 同一行数量；不允许时返回策略给出的 reason，否则返回 (True, None)。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/order/abstract_models.py", "line_start": 859, "line_end": 889, "symbols": ["AbstractLine.is_available_to_reorder"]}
+      ],
+      "rubric": {"must_mention": ["deleted/no stockrecord 拒绝", "从 attributes 还原 options", "累计当前 basket 同一行数量", "交给 availability policy 并返回原因"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "django-oscar-order-line-stock-allocation-lifecycle",
+    "repository_id": "django-oscar-4.2.1",
+    "suite_type": "inventory",
+    "question_type": "transactional_state_change",
+    "difficulty": "hard",
+    "user_input": "Order Line consume_allocation 和 cancel_allocation 怎样处理未跟踪库存、已取消分配和数量越界？两种操作的数据库更新有什么区别？",
+    "ground_truth": {
+      "answer_points": [
+        "不跟踪 allocation 时两种方法都直接返回；已取消或数量超过 num_allocated 时 consume_allocation 抛 InvalidStockAdjustment，而 cancel_allocation 安静返回。",
+        "consume_allocation 在 transaction.atomic 中用 F/Coalesce 原子递减 num_allocated，再同步 stockrecord.consume_allocation，最后刷新本对象字段。",
+        "cancel_allocation 在事务中 select_for_update 锁定 Order Line；全量取消时置 allocation_cancelled=True 且数量归零，否则递减，再调用 stockrecord.cancel_allocation 并刷新状态。"
+      ],
+      "expected_evidence": [
+        {"path": "src/oscar/apps/order/abstract_models.py", "line_start": 895, "line_end": 939, "symbols": ["AbstractLine.is_allocation_consumption_possible", "AbstractLine.consume_allocation", "AbstractLine.cancel_allocation"]}
+      ],
+      "rubric": {"must_mention": ["tracking 关闭 no-op", "consume 越界异常而 cancel no-op", "F/Coalesce 原子递减", "cancel 使用行锁及全量取消标志"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "d0a70850abf8e4229d4971aa7e8f4643326ec9f3"}
+  },
+  {
+    "case_id": "httpx-client-build-request-merges-defaults",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "configuration_merge",
+    "difficulty": "medium",
+    "user_input": "Client.build_request 怎样处理 base_url 和 client 级 headers/cookies/params？请求未指定 timeout 时怎样传递默认值？",
+    "ground_truth": {
+      "answer_points": [
+        "relative URL 追加到规范化为尾斜杠的 base_url 后；相对 URL 开头的斜杠会先移除，绝对 URL 原样使用。",
+        "build_request 用 client defaults 与 request 参数合并 headers、cookies 和 query params，再创建 Request。",
+        "请求未显式覆盖 timeout 时使用 client.timeout；最终 timeout 四项写入 Request.extensions['timeout']，已有 timeout extension 则保留。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_client.py", "line_start": 340, "line_end": 389, "symbols": ["BaseClient.build_request"]},
+        {"path": "httpx/_client.py", "line_start": 391, "line_end": 443, "symbols": ["BaseClient._merge_url", "BaseClient._merge_cookies", "BaseClient._merge_headers", "BaseClient._merge_queryparams"]}
+      ],
+      "rubric": {"must_mention": ["relative URL 追加 base_url", "headers/cookies/params 与 client 默认值合并", "timeout 默认/覆盖", "timeout 写入 extensions"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-timeout-four-phase-normalization",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "configuration_semantics",
+    "difficulty": "medium",
+    "user_input": "httpx.Timeout 接收单个默认值、二元/三元/四元 tuple 和单独 connect/read/write/pool 参数时，四类 timeout 怎样确定？哪些输入会抛 ValueError？",
+    "ground_truth": {
+      "answer_points": [
+        "单个 timeout 值作为未显式指定组件的默认值，connect/read/write/pool 可逐项覆盖；Timeout(None) 可关闭全部超时。",
+        "tuple 前两项分别是 connect/read，第三项为 write，第四项为 pool；缺少的第三/第四项设为 None。",
+        "四个组件都显式传入时可不提供默认值；若 timeout 未设置且任一组件仍为 UNSET，则抛 ValueError。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_config.py", "line_start": 72, "line_end": 138, "symbols": ["Timeout.__init__", "Timeout.as_dict"]}
+      ],
+      "rubric": {"must_mention": ["四个独立阶段", "默认值和逐项覆盖", "tuple 位置及缺项 None", "缺默认且组件不全报错"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-request-versus-stream-response-lifecycle",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "resource_lifecycle",
+    "difficulty": "medium",
+    "user_input": "Client.request 与 Client.stream 在响应 body 读取和关闭时机上有什么区别？若 request 的读取过程抛异常会怎样？",
+    "ground_truth": {
+      "answer_points": [
+        "Client.request 构建 Request 后调用 send，默认 stream=False；send 在返回前读取完整 response body。",
+        "Client.stream 以 stream=True 发送并把 Response 交给 context manager；离开上下文时 finally 调用 response.close()。",
+        "send 的非流式读取发生异常时关闭 response 后再重新抛出异常。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_client.py", "line_start": 771, "line_end": 877, "symbols": ["Client.request", "Client.stream"]},
+        {"path": "httpx/_client.py", "line_start": 879, "line_end": 928, "symbols": ["Client.send"]}
+      ],
+      "rubric": {"must_mention": ["request 默认读取完整 body", "stream=True 上下文管理", "退出上下文 close", "读取异常 close 后重抛"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-redirect-method-and-body-policy",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "redirect_policy",
+    "difficulty": "hard",
+    "user_input": "HTTPX 遇到 301/302/303/307/308 重定向时怎样决定新请求方法？方法变为 GET 后，原请求 body 和相关 headers 怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "303 和 302 对非 HEAD 请求改为 GET；301 仅当原方法为 POST 时改 GET；其他方法以及 307/308 保留原方法。",
+        "方法变为 GET 时不复用原请求 stream，并移除 Content-Length 与 Transfer-Encoding。",
+        "方法未改变时 redirect request 继续使用原 request.stream。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_client.py", "line_start": 494, "line_end": 515, "symbols": ["BaseClient._redirect_method"]},
+        {"path": "httpx/_client.py", "line_start": 546, "line_end": 582, "symbols": ["BaseClient._redirect_headers", "BaseClient._redirect_stream"]}
+      ],
+      "rubric": {"must_mention": ["302/303 非 HEAD 改 GET", "301 仅 POST 改 GET", "GET 删除 body 长度/传输头", "方法未改保留 stream"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-cross-origin-redirect-header-safety",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "credential_boundary",
+    "difficulty": "hard",
+    "user_input": "HTTPX 跟随跨 origin 重定向时，Authorization、Host、Cookie 和请求 body 相关 headers 怎样调整？HTTP 到 HTTPS 有什么例外？",
+    "ground_truth": {
+      "answer_points": [
+        "跨 origin 时更新 Host；Authorization 默认移除，但直接从 HTTP 重定向到 HTTPS 时保留。",
+        "无论 origin 是否变化，原 Cookie header 都移除，重定向 Request 使用 client cookie store 创建的 Cookies。",
+        "如果重定向方法改为 GET，则移除 Content-Length 和 Transfer-Encoding，且 _redirect_stream 不复用原 body stream。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_client.py", "line_start": 475, "line_end": 492, "symbols": ["BaseClient._build_redirect_request"]},
+        {"path": "httpx/_client.py", "line_start": 546, "line_end": 582, "symbols": ["BaseClient._redirect_headers", "BaseClient._redirect_stream"]}
+      ],
+      "rubric": {"must_mention": ["跨 origin Authorization 规则及 HTTP→HTTPS 例外", "更新 Host", "Cookie 重建", "GET 时去除 body 与相关 headers"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-redirect-following-and-limit",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "redirect_state_flow",
+    "difficulty": "medium",
+    "user_input": "Client.follow_redirects=False 时收到 redirect response 会怎样返回？打开自动跟随后，redirect history 和最大跳转数怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "不自动跟随时返回原 redirect Response，并把构造出的下一条 Request 放在 response.next_request。",
+        "自动跟随时把当前 response 加入 history，读取其 body 后再发送下一请求；最终 response.history 保存已经过的响应。",
+        "当 history 长度超过 max_redirects 时抛 TooManyRedirects，并关联当前 request。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_client.py", "line_start": 964, "line_end": 999, "symbols": ["BaseClient._send_handling_redirects"]}
+      ],
+      "rubric": {"must_mention": ["next_request", "自动跟随读取并累积 history", "max_redirects 超限异常"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-response-raw-versus-decoded-stream",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "streaming_semantics",
+    "difficulty": "medium",
+    "user_input": "Response.iter_raw 与 iter_bytes 返回的数据有什么区别？完整读取后连接怎样释放，已消费或关闭的流会怎样？",
+    "ground_truth": {
+      "answer_points": [
+        "iter_raw 迭代传输层原始字节；iter_bytes 在其上应用 gzip/deflate/brotli/zstd 内容解码器后返回解码字节。",
+        "raw iterator 开始时标记 is_stream_consumed；读完后自动 close 释放连接，iter_bytes 完成底层读取也会触发该关闭。",
+        "已消费时抛 StreamConsumed，已关闭时抛 StreamClosed；同步 Response 不能对异步 stream 调用同步迭代/关闭。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_models.py", "line_start": 884, "line_end": 905, "symbols": ["Response.iter_bytes"]},
+        {"path": "httpx/_models.py", "line_start": 935, "line_end": 973, "symbols": ["Response.iter_raw", "Response.close"]}
+      ],
+      "rubric": {"must_mention": ["raw 与 content-decoded 区别", "stream consumed/closed 状态", "读完自动释放连接", "错误边界"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-response-raise-for-status-context",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "error_contract",
+    "difficulty": "easy",
+    "user_input": "Response.raise_for_status 在成功、未关联 Request 和错误响应时分别怎样返回/抛错？redirect error message 有什么额外信息？",
+    "ground_truth": {
+      "answer_points": [
+        "没有关联 Request 时抛 RuntimeError；成功状态直接返回同一个 Response。",
+        "非成功状态抛 HTTPStatusError，并携带 request 与 response；错误类型根据 1xx/3xx/4xx/5xx 分类。",
+        "若响应带 redirect Location，错误信息额外包含 Redirect location；否则只报告状态、reason 和 URL。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_models.py", "line_start": 794, "line_end": 829, "symbols": ["Response.raise_for_status"]}
+      ],
+      "rubric": {"must_mention": ["缺 Request 时 RuntimeError", "success 返回 self", "HTTPStatusError 附 request/response", "redirect Location 额外信息"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-digest-auth-challenge-retry",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "authentication",
+    "question_type": "challenge_flow",
+    "difficulty": "hard",
+    "user_input": "DigestAuth 首次发送请求时是否立即带 Authorization？收到哪些响应后会解析 challenge 并重发？",
+    "ground_truth": {
+      "answer_points": [
+        "首次没有缓存 challenge 时先发送原请求；若已有上次 challenge，则可先据其生成 Authorization。",
+        "仅收到 401 且有 WWW-Authenticate header，并在其列表中找到 Digest scheme 时解析 challenge；非 401 或无 Digest challenge 都结束 auth flow，不重发。",
+        "解析后重置 nonce_count，构造 Authorization；若 challenge response 带 cookies，将其写入重试 Request 后再次 yield。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_auth.py", "line_start": 175, "line_end": 222, "symbols": ["DigestAuth.auth_flow"]}
+      ],
+      "rubric": {"must_mention": ["无缓存 challenge 先发原请求", "401+Digest WWW-Authenticate 门槛", "挑战后重新构造 Authorization", "cookies 随重试请求带上"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-event-hook-order-and-error-cleanup",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "event_flow",
+    "difficulty": "medium",
+    "user_input": "Client 跟随重定向时 request/response event hooks 在每一跳的什么位置执行？response hook 抛异常时当前响应怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "每一跳发送前先依次调用 request hooks，再调用 _send_single_request；收到响应后依次调用 response hooks，然后处理 history 和 redirect。",
+        "跟随重定向会回到循环，因此下一跳也重新执行 request/response hooks。",
+        "response hook 或后续处理抛 BaseException 时，关闭当前 response 后重新抛出异常。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_client.py", "line_start": 964, "line_end": 999, "symbols": ["BaseClient._send_handling_redirects"]}
+      ],
+      "rubric": {"must_mention": ["request hook 在 send 前", "response hook 在处理 redirect 前", "每一跳重复执行", "异常时 close 并重抛"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-trust-env-proxy-selection",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "transport",
+    "question_type": "configuration_boundary",
+    "difficulty": "medium",
+    "user_input": "Client 在什么条件下读取环境代理？显式 proxy、trust_env=False 和用户传入自定义 transport 分别怎样影响 proxy map？",
+    "ground_truth": {
+      "answer_points": [
+        "仅当 trust_env=True 且没有传入自定义 transport 时，allow_env_proxies 为 True。",
+        "没有显式 proxy 且允许环境代理时，从 get_environment_proxies() 构造 proxy map；不允许时返回空 map。",
+        "显式 proxy 优先转换为 Proxy 并映射到 all://，不再读取环境代理；自定义 transport 会关闭自动环境代理读取。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_client.py", "line_start": 685, "line_end": 714, "symbols": ["Client.__init__"]},
+        {"path": "httpx/_client.py", "line_start": 239, "line_end": 252, "symbols": ["BaseClient._get_proxy_map"]}
+      ],
+      "rubric": {"must_mention": ["trust_env 且无 custom transport", "环境代理读取条件", "显式 proxy 映射 all://", "自定义 transport 禁止自动 env proxy"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-client-close-state-and-transports",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "resource_lifecycle",
+    "difficulty": "medium",
+    "user_input": "同步 Client.close 和上下文管理退出时会关闭哪些 transport？Client 关闭后还能发送请求或再次进入 with 吗？",
+    "ground_truth": {
+      "answer_points": [
+        "close 只在状态尚未 CLOSED 时执行一次：先标记 CLOSED，再关闭主 transport 和所有非 None mounted transports。",
+        "send 检查到 CLOSED 会抛 RuntimeError。",
+        "__enter__ 只允许 UNOPENED 状态；OPENED 或 CLOSED 都抛 RuntimeError，成功进入时会进入主 transport 及各 mounted transport。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_client.py", "line_start": 879, "line_end": 903, "symbols": ["Client.send"]},
+        {"path": "httpx/_client.py", "line_start": 1263, "line_end": 1291, "symbols": ["Client.close", "Client.__enter__"]}
+      ],
+      "rubric": {"must_mention": ["关闭主和 mounted transports", "send closed 报错", "只从 UNOPENED 进入", "opened/closed 均不能再次 enter"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-httptransport-retry-forwarding",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "transport",
+    "question_type": "retry_boundary",
+    "difficulty": "hard",
+    "user_input": "HTTPTransport(retries=N) 怎样把 retry 配置传给底层连接池？直连、HTTP(S) proxy 和 SOCKS proxy 分支都收到相同 retries 参数吗？",
+    "ground_truth": {
+      "answer_points": [
+        "无 proxy 时创建 httpcore.ConnectionPool，并显式传入 retries。",
+        "HTTP(S) proxy 分支创建 httpcore.HTTPProxy，SOCKS 分支创建 httpcore.SOCKSProxy；这两个构造调用没有传 retries 参数。",
+        "因此源码中 retries 参数只在 direct ConnectionPool 分支显式转发，不能据此声称它同样配置了 proxy pools。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_transports/default.py", "line_start": 135, "line_end": 210, "symbols": ["HTTPTransport.__init__"]}
+      ],
+      "rubric": {"must_mention": ["HTTPTransport 参数 retries", "直连 ConnectionPool 转发", "HTTPProxy/SOCKSProxy 分支未传 retries", "不推断代理池具有相同配置"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-response-text-encoding-precedence",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "response-model",
+    "question_type": "encoding_precedence",
+    "difficulty": "medium",
+    "user_input": "Response.text 选择字符编码的优先级是什么？Content-Type 没有可用 charset 时，字符串或 callable default_encoding 分别怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "显式设置的 response.encoding 优先于 Content-Type 的 charset。",
+        "没有显式 encoding 时，先读取已知且有效的 charset；无 charset 或 charset 未知时使用 default_encoding。",
+        "default_encoding 可以是字符串，也可以是 callable；callable 在 content 已加载时接收响应 bytes 做自动检测，最终没有得到编码时回退到 UTF-8。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_models.py", "line_start": 641, "line_end": 675, "symbols": ["Response.text", "Response.encoding"]}
+      ],
+      "rubric": {"must_mention": ["显式 encoding 优先", "Content-Type charset 次之", "default_encoding string/callable", "最终 UTF-8 fallback"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-request-body-encoding-precedence",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "http-client",
+    "question_type": "body_encoding",
+    "difficulty": "medium",
+    "user_input": "encode_request 同时收到 content、files、data、json 时按什么优先级选择 body？data 不是 Mapping 时怎样兼容处理？",
+    "ground_truth": {
+      "answer_points": [
+        "data 为非 Mapping 时走兼容分支，发 DeprecationWarning 并按 raw content 编码。",
+        "其余分支优先级是 content、files（multipart）、data（URL-encoded）、json；都未提供时生成空 ByteStream。",
+        "因此传入多个 body 参数并不是合并它们，而是由首个满足条件的分支决定实际 body 编码。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_content.py", "line_start": 186, "line_end": 218, "symbols": ["encode_request"]}
+      ],
+      "rubric": {"must_mention": ["non-Mapping data 兼容 raw 内容且弃用警告", "content/files/data/json 顺序", "空 body 回退", "不是合并多种 body"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "httpx-basic-auth-tuple-encoding",
+    "repository_id": "httpx-0.28.1",
+    "suite_type": "authentication",
+    "question_type": "header_construction",
+    "difficulty": "easy",
+    "user_input": "Client 收到 auth=(username, password) tuple 时怎样转换并构造 Basic Authorization header？",
+    "ground_truth": {
+      "answer_points": [
+        "_build_auth 把 tuple 转为 BasicAuth 实例。",
+        "BasicAuth 将 username/password 转成 bytes，以冒号连接后 Base64 编码。",
+        "auth_flow 在发出 request 前设置 Authorization: Basic <token>，再 yield 该 request。"
+      ],
+      "expected_evidence": [
+        {"path": "httpx/_client.py", "line_start": 445, "line_end": 455, "symbols": ["BaseClient._build_auth"]},
+        {"path": "httpx/_auth.py", "line_start": 126, "line_end": 142, "symbols": ["BasicAuth.auth_flow", "BasicAuth._build_auth_header"]}
+      ],
+      "rubric": {"must_mention": ["tuple 映射 BasicAuth", "bytes 编码和冒号连接", "Base64", "发送前设置 Authorization"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "tau-review-draft", "generator_version": "0.1.0", "source_commit": "26d48e0634e6ee9cdc0533996db289ce4b430177"}
+  },
+  {
+    "case_id": "sparkle-snapshot-identity-and-manifest-invariants",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "snapshot-model",
+    "question_type": "identity_and_validation",
+    "difficulty": "medium",
+    "user_input": "RepositorySnapshot.create 怎样规范化文件清单并生成 snapshot_id？SnapshotFile 会拒绝哪些不安全路径或哈希格式？",
+    "ground_truth": {
+      "answer_points": [
+        "SnapshotFile 要求规范相对 POSIX 路径，拒绝反斜杠、绝对路径、盘符路径、点路径/父目录段；文件 SHA-256 必须是 64 位小写十六进制。",
+        "RepositorySnapshot.create 按路径排序文件并拒绝重复路径；身份材料包含 source_commit、每个文件的 path/SHA-256 和 index_version。",
+        "身份材料按稳定 JSON 编码后计算 SHA-256 作为 snapshot_id；snapshot_root 不属于该身份材料。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/domain/repository.py", "line_start": 21, "line_end": 34, "symbols": ["SnapshotFile.__post_init__"]},
+        {"path": "src/sparkle_navigator/domain/repository.py", "line_start": 47, "line_end": 92, "symbols": ["RepositorySnapshot.create"]}
+      ],
+      "rubric": {"must_mention": ["规范相对 POSIX 路径", "小写 64 位文件哈希", "排序并拒绝重复路径", "commit/files/index_version 参与 ID", "snapshot_root 不参与 ID"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-snapshot-content-verification-and-binary-skip",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "snapshot-integrity",
+    "question_type": "verification_boundary",
+    "difficulty": "hard",
+    "user_input": "索引或读取 Snapshot 文件前，Sparkle 如何验证磁盘内容确实对应 Manifest？符号链接、额外/缺失文件、哈希不一致和二进制内容分别怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "全量扫描先校验 Snapshot 身份和安全根目录，拒绝符号链接，并要求磁盘文件相对路径集合与 Snapshot Manifest 完全一致。",
+        "每个文件都重新计算 SHA-256；哈希不匹配会拒绝扫描/读取，而不是继续索引旧或变更内容。",
+        "哈希有效但含 NUL 或不能按 UTF-8 解码的文件仍属于 Snapshot 文件，只是文本内容设为 None，因而不进入文本索引。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/context/_snapshot_files.py", "line_start": 16, "line_end": 45, "symbols": ["scan_verified_snapshot_files"]},
+        {"path": "src/sparkle_navigator/context/_snapshot_files.py", "line_start": 98, "line_end": 112, "symbols": ["_read_verified_file"]}
+      ],
+      "rubric": {"must_mention": ["Snapshot ID/root 校验", "拒绝符号链接", "磁盘路径集合与 Manifest 完全相等", "逐文件 SHA-256", "二进制/非 UTF-8 跳过文本索引但不从 Snapshot 删除"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-text-index-build-and-snapshot-scoped-search",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "text-retrieval",
+    "question_type": "index_and_query_contract",
+    "difficulty": "medium",
+    "user_input": "SnapshotTextIndex.build 和 search_text 各自负责什么？关键词查询的语义是什么，如何避免搜到其他 Snapshot 的文件？",
+    "ground_truth": {
+      "answer_points": [
+        "build 在线程池执行已验证 Snapshot 文件扫描，再用 snapshot_id 原子替换该 Snapshot 的文件文本索引，并返回总文件、已索引文本文件和跳过文件计数。",
+        "search_text 要求正整数 limit，并把空格分隔的关键词转成带引号的 FTS 查询词，以 AND 连接；空查询会报错。",
+        "实际存储查询传入调用者的 snapshot_id，因此命中范围限定在该 Snapshot，而不是跨仓库或跨版本混搜。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/context/text_index.py", "line_start": 46, "line_end": 82, "symbols": ["SnapshotTextIndex.build", "SnapshotTextIndex.search_text"]},
+        {"path": "src/sparkle_navigator/context/text_index.py", "line_start": 85, "line_end": 89, "symbols": ["_literal_match_query"]}
+      ],
+      "rubric": {"must_mention": ["先校验 Snapshot 内容", "按 snapshot_id 替换索引", "返回索引/跳过计数", "关键词 AND 语义", "按 Snapshot 隔离查询"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-python-ast-records-and-syntax-diagnostics",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "python-static-analysis",
+    "question_type": "ast_boundary_and_error",
+    "difficulty": "medium",
+    "user_input": "parse_python_file 用 AST 从 Python 文件记录哪些事实？动态调用和语法错误怎样表示？解析器会不会导入或执行被分析代码？",
+    "ground_truth": {
+      "answer_points": [
+        "NodeVisitor 记录类、函数、异步函数/方法符号，记录 import/from-import，并收集调用点及其所在函数。",
+        "可还原为点分名称的调用记为 name/attribute；不能还原的表达式用 ast.unparse 表示，并标记 callee_kind=dynamic。",
+        "ast.parse 遇到 SyntaxError 时返回带路径、行、列和消息的诊断，且该文件不返回符号、导入或调用记录；实现只解析 AST，不导入或执行目标代码。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/context/python_symbols.py", "line_start": 47, "line_end": 83, "symbols": ["_PythonRecordVisitor.visit_ClassDef", "visit_FunctionDef"]},
+        {"path": "src/sparkle_navigator/context/python_symbols.py", "line_start": 109, "line_end": 129, "symbols": ["_PythonRecordVisitor.visit_Call"]},
+        {"path": "src/sparkle_navigator/context/python_symbols.py", "line_start": 160, "line_end": 185, "symbols": ["parse_python_file"]}
+      ],
+      "rubric": {"must_mention": ["声明符号/导入/调用点", "dynamic 调用标记", "SyntaxError 返回诊断且无部分记录", "静态解析而不执行"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-code-graph-confidence-and-unresolved-calls",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "code-graph",
+    "question_type": "static_relation_semantics",
+    "difficulty": "hard",
+    "user_input": "SnapshotCodeGraph 会建立哪些关系？哪些关系标记为 CONFIRMED，静态调用无法解析时会怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "图构建会为声明建立 DEFINES，为导入建立 IMPORTS；可解析到其他本地模块的导入还会建立 DEPENDS_ON。",
+        "上述由 AST 直接提取的定义/导入关系标为 CONFIRMED，并保留对应源码行作为证据。",
+        "调用点交给静态解析器；解析成功时建立 CALLS 并保留解析置信度与调用行，解析失败时不伪造目标边，而是增加 unresolved_call_count。语法错误文件进入 diagnostics 并跳过关系生成。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/context/code_graph.py", "line_start": 57, "line_end": 79, "symbols": ["SnapshotCodeGraph.build"]},
+        {"path": "src/sparkle_navigator/context/code_graph.py", "line_start": 232, "line_end": 327, "symbols": ["_build_relationships"]}
+      ],
+      "rubric": {"must_mention": ["DEFINES/IMPORTS/DEPENDS_ON/CALLS", "静态定义和导入的 CONFIRMED 与行证据", "解析不到的调用不捏造目标", "unresolved_call_count", "语法错误诊断并跳过"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-reciprocal-rank-fusion-dedup-and-order",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "retrieval-ranking",
+    "question_type": "ranking_algorithm",
+    "difficulty": "easy",
+    "user_input": "reciprocal_rank_fusion 怎样计算候选分数？同一检索列表重复出现的候选、不同列表的重复候选和同分结果分别怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "每个列表的排名从 1 开始，候选在每个列表贡献 1/(k+rank)，默认 k=60，再跨列表累加。",
+        "同一列表内重复候选只计第一次；同一候选出现在不同检索列表则各列表贡献都会累加。",
+        "结果按分数降序；分数相同时按 candidate_id 字典序稳定排序。k 必须是正整数且不能是 bool。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/context/rank_fusion.py", "line_start": 18, "line_end": 47, "symbols": ["reciprocal_rank_fusion"]}
+      ],
+      "rubric": {"must_mention": ["1/(k+rank)", "rank 从 1 开始", "仅列表内去重", "跨列表分数累加", "分数降序及 ID 字典序 tie-break"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-hybrid-ask-fuses-verified-evidence",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "repository-qa",
+    "question_type": "retrieval_data_flow",
+    "difficulty": "hard",
+    "user_input": "SnapshotExplorer.ask 会从哪些检索通道生成候选？候选怎样变成最终 EvidenceSet，最终答案是否由模型生成？",
+    "ground_truth": {
+      "answer_points": [
+        "搜索通道包括 FTS 文本、符号、代码图调用关系；配置 SemanticIndex 时还加入语义检索。",
+        "候选路径合并后通过 read_verified_snapshot_files 再次按 Snapshot 清单和哈希读取；不可验证的候选不会作为证据继续使用。",
+        "各通道的路径排名交给 Reciprocal Rank Fusion，随后收集带 Snapshot 身份的 CodeEvidence，并构造 EvidenceSet；当前 answer 由 _render_answer 确定性渲染，不是调用 LLM 生成。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/context/snapshot_explorer.py", "line_start": 486, "line_end": 557, "symbols": ["SnapshotExplorer.ask"]},
+        {"path": "src/sparkle_navigator/context/snapshot_explorer.py", "line_start": 558, "line_end": 580, "symbols": ["SnapshotExplorer._search_candidates"]}
+      ],
+      "rubric": {"must_mention": ["文本/符号/图/可选语义通道", "候选源文件再次哈希验证", "RRF 合并多路排名", "EvidenceSet 绑定 Snapshot", "答案是确定性渲染而非 LLM"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-explain-file-symbol-and-not-found",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "repository-navigation",
+    "question_type": "target_resolution",
+    "difficulty": "medium",
+    "user_input": "SnapshotExplorer.explain 怎样区分文件路径与符号查询？符号不存在或文件不是可读文本时分别返回什么？",
+    "ground_truth": {
+      "answer_points": [
+        "target 与 Snapshot Manifest 中路径精确相等时按文件解释；否则调用 Snapshot 绑定的 SymbolIndex 搜索符号。",
+        "符号未命中时返回 target_kind=not_found、空 relationships/diagnostics 和同 Snapshot 的空 EvidenceSet，不继续读取任意路径。",
+        "读取候选文件前会验证 Snapshot 文件；文件不是 UTF-8 文本时添加诊断。Python 文件再做 AST 解析，SyntaxError 也以诊断呈现而不执行源码。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/context/snapshot_explorer.py", "line_start": 135, "line_end": 173, "symbols": ["SnapshotExplorer.explain"]},
+        {"path": "src/sparkle_navigator/context/snapshot_explorer.py", "line_start": 181, "line_end": 220, "symbols": ["SnapshotExplorer.explain"]}
+      ],
+      "rubric": {"must_mention": ["Manifest 精确路径优先识别", "否则查符号索引", "not_found 返回空同快照 EvidenceSet", "先验证候选文件", "UTF-8/AST 问题转诊断"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-context-budget-priority-and-snapshot-gate",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "context-engine",
+    "question_type": "budget_and_trust_boundary",
+    "difficulty": "hard",
+    "user_input": "ContextManager.build 怎样校验 Snapshot 并按 Token 预算选择材料？代码证据、项目事实和学习者资料的优先顺序是什么，资料被标注成什么信任级别？",
+    "ground_truth": {
+      "answer_points": [
+        "token_budget 必须是非负整数，实际预算最多 4096；0 直接返回 None，且只允许读取 Repository 当前 Snapshot。",
+        "按查询检索并筛出同 Snapshot 证据；项目事实必须是重新验证后的 CONFIRMED 同快照事实，之后读取 LearnerProfile。",
+        "各块只有在不超预算时才加入，顺序是代码证据、确认项目事实、学习者偏好/疑难点/进度；上下文头部说明仓库摘录是不可信参考、学习者资料只指导解释风格。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/context/context_manager.py", "line_start": 69, "line_end": 124, "symbols": ["ContextManager.build"]},
+        {"path": "src/sparkle_navigator/context/context_manager.py", "line_start": 127, "line_end": 157, "symbols": ["ContextManager.build"]}
+      ],
+      "rubric": {"must_mention": ["预算非负且上限 4096", "0 预算不构造上下文", "当前 Snapshot gate", "证据→确认事实→LearnerProfile 顺序", "超预算跳过", "仓库内容不可信、profile 只影响讲解风格"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-tool-profile-provider-visibility-and-untrusted-repo",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "tool-authorization",
+    "question_type": "model_visible_tool_filtering",
+    "difficulty": "medium",
+    "user_input": "ToolProfileRuntime.filter_tools 怎样决定交给 Provider 的工具集合？当 Repository 尚未信任时，策略可见工具还会受到什么限制？",
+    "ground_truth": {
+      "answer_points": [
+        "先从 Tau Session CustomEntry 恢复 Tool Profile，再把注册项转成领域注册并由 ToolProfilePolicy.visible_tools 计算当前 Profile 可见集。",
+        "如果 repository_trusted 明确为 False，会进一步只保留 risk=READ_ONLY 的注册；因此即使 Profile 原本包含副作用工具，未信任仓库也不会把它们暴露给模型。",
+        "最后返回原始注册中的 Tau AgentTool 对象；filter_tools 负责模型可见面，不等于工具执行时的授权检查。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/runtime/tool_profile.py", "line_start": 120, "line_end": 143, "symbols": ["ToolProfileRuntime.filter_tools"]}
+      ],
+      "rubric": {"must_mention": ["从 Session entries 恢复 Profile", "Policy.visible_tools 过滤", "未信任仓库只显示 READ_ONLY", "返回 Tau AgentTool", "可见性过滤不同于执行授权"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-tool-profile-one-shot-approval-receipt",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "tool-authorization",
+    "question_type": "approval_and_hook_integrity",
+    "difficulty": "hard",
+    "user_input": "副作用工具从 before_tool_call 到实际 executor 之间怎样证明调用已获准？如果扩展 hook 改写参数、Profile/注册项变化或审批材料失效会怎样？",
+    "ground_truth": {
+      "answer_points": [
+        "before_tool_call 要求工具名唯一注册，计算原始参数指纹，检查未信任仓库的副作用风险和工作区路径，再执行 Profile 策略；AL​​LOW 或用户批准后才在进程内保存与 tool_call_id 绑定的一次性凭证。",
+        "需要审批却没有审批器、审批失败/拒绝、审批参数变化或批准后文件快照变化时均返回阻止结果，不执行工具。",
+        "执行前 validate_tool_execution 先消费该凭证，并核对工具名、Profile、注册身份、原始与 hook 后参数指纹；任一不匹配或工作目录/命令/文件批准范围变化都会拒绝执行。凭证是内存一次性状态，不是持久 Session 记录。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/runtime/tool_profile.py", "line_start": 144, "line_end": 246, "symbols": ["ToolProfileRuntime.before_tool_call"]},
+        {"path": "src/sparkle_navigator/runtime/tool_profile.py", "line_start": 248, "line_end": 313, "symbols": ["ToolProfileRuntime.validate_tool_execution"]}
+      ],
+      "rubric": {"must_mention": ["唯一注册/风险/路径/策略检查", "审批异常 fail-closed", "通过后保存一次性调用凭证", "执行前消费凭证", "核对原始和 hook 后参数", "会话 Profile、注册、审批环境变化会阻止", "不是持久化 Session 状态"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-project-fact-evidence-and-invalidation",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "project-memory",
+    "question_type": "evidence_lifecycle",
+    "difficulty": "hard",
+    "user_input": "ProjectMemory 怎样记录用户确认的代码事实？替代旧事实、读取事实以及其 Snapshot 证据失效时会怎样？",
+    "ground_truth": {
+      "answer_points": [
+        "record_user_correction 要求非空陈述和证据，且事实必须绑定 Repository 当前 Snapshot；证据需与 Manifest 哈希、Snapshot ID、有效行号和实际源码片段匹配，然后新事实以 CONFIRMED 保存。",
+        "替代事实必须属于同一 Repository，INVALID 或 SUPERSEDED 事实不能再次被替代；新事实保存时旧事实状态变为 SUPERSEDED。",
+        "verified_facts_for_snapshot 只检查当前 Snapshot 的 CONFIRMED 事实，会重新验证其源码证据；验证失败则将该事实置为 INVALID 并跳过，不向上下文返回。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/memory/project_memory.py", "line_start": 39, "line_end": 108, "symbols": ["ProjectMemory.record_user_correction"]},
+        {"path": "src/sparkle_navigator/memory/project_memory.py", "line_start": 130, "line_end": 208, "symbols": ["ProjectMemory.verified_facts_for_snapshot", "ProjectMemory._verify_evidence"]}
+      ],
+      "rubric": {"must_mention": ["用户确认且当前 Snapshot", "文件哈希/行范围/源码片段验证", "CONFIRMED", "旧事实 SUPERSEDED 约束", "再次验证后失效事实 INVALID 且不返回"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-evaluation-run-ground-truth-isolation",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "evaluation-lab",
+    "question_type": "ground_truth_isolation_and_state_flow",
+    "difficulty": "hard",
+    "user_input": "EvaluationLab 执行一个 Case 时，哪些字段会传给 AgentRunner？Run 何时进入 Evaluator，取消、运行失败或 Snapshot 不匹配的证据分别怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "从 EvaluationCase 建立 AgentRunInput 时只传 run_id、case_id、repetition、snapshot_id 和 user_input，不把 ground_truth/答案点放进 AgentRunner 输入。",
+        "Runner 取消会取消 Run 和 Experiment；Runner 异常或 output.failure 会把 Run 标为失败；输出证据若不属于 Experiment Snapshot，也清空证据并使 Run 失败。",
+        "只有 AgentRun 成功且 Evidence Snapshot 校验通过后，Run 才进入 EVALUATING 并调用 Evaluator；Evaluator 结果随后完成持久化。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/evaluation/core.py", "line_start": 150, "line_end": 201, "symbols": ["EvaluationLab._execute"]},
+        {"path": "src/sparkle_navigator/evaluation/core.py", "line_start": 203, "line_end": 252, "symbols": ["EvaluationLab._execute"]}
+      ],
+      "rubric": {"must_mention": ["AgentRunInput 不含 Ground Truth", "取消与失败状态持久化", "证据 Snapshot 必须匹配", "仅成功校验后进入 EVALUATING", "Evaluator 后才完成 Run"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-native-backend-session-trace-and-final-output",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "evaluation-runtime",
+    "question_type": "tau_session_lifecycle",
+    "difficulty": "hard",
+    "user_input": "NativeBackend.run 怎样把一次 Evaluation AgentRun 接入 Tau CodingSession？Trace、最终回答、错误/取消、Session 清理和代码证据分别如何处理？",
+    "ground_truth": {
+      "answer_points": [
+        "每个 AgentRun 使用独立 Tau session_id=run_id；通过 CodingSession.load 加载 Session，并以 session.prompt(user_input) 产生原生事件流，TraceRecorder.capture 旁路记录。",
+        "取消被记录并最终转成 AgentRunCancelled；其他运行异常转成脱敏 failure；无论成功、失败或取消，finally 都尝试 aclose Session。最终答案取最后一个 stop_reason 不是 toolUse 的 AssistantMessage，error/aborted 会成为失败。",
+        "Backend 汇总消息 Usage/Timing、可持久化 Trace 和事件中的 CodeEvidence；Evidence 的 snapshot_id 必须与 AgentRun 输入匹配，否则作为 invalid_code_evidence 失败。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/evaluation/native_backend.py", "line_start": 56, "line_end": 97, "symbols": ["NativeBackend.run"]},
+        {"path": "src/sparkle_navigator/evaluation/native_backend.py", "line_start": 98, "line_end": 180, "symbols": ["NativeBackend.run"]}
+      ],
+      "rubric": {"must_mention": ["run_id 作为 Tau Session ID", "CodingSession prompt + TraceRecorder", "cancel/failure 分类及 finally 关闭", "排除 toolUse 选最终回答", "Usage/Timing/Trace 汇总", "CodeEvidence Snapshot 校验"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-ragas-faithfulness-input-and-metric-record",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "evaluation-metrics",
+    "question_type": "judge_input_isolation",
+    "difficulty": "medium",
+    "user_input": "Sparkle 的 RagasMetricAdapter 怎样调用第三方 Metric 并保存结果？faithfulness_input 会给 Judge 哪些材料，隐藏 Ground Truth 是否会传进去？",
+    "ground_truth": {
+      "answer_points": [
+        "Adapter 由调用者注入单项 Metric、名称、Ragas 版本、输入构造器和优化方向；evaluate 调用 ascore(**metric_input)。",
+        "faithfulness_input 只传 user_input、Agent 输出 response 和 Agent 实际检索到的 evidence snippets，不传 case.ground_truth；ContextRelevance 输入也排除 Ground Truth。",
+        "返回值必须是数字或 None；适配器保存指标名称/值、reason、实际 input_fields、evaluator_id/version 和方向。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/evaluation/ragas_adapter.py", "line_start": 37, "line_end": 83, "symbols": ["RagasMetricAdapter.evaluate"]},
+        {"path": "src/sparkle_navigator/evaluation/ragas_adapter.py", "line_start": 86, "line_end": 108, "symbols": ["faithfulness_input", "context_relevance_input"]}
+      ],
+      "rubric": {"must_mention": ["注入式单 Metric Adapter", "ascore 调用", "Faithfulness 用 user_input/response/retrieved contexts", "不向 Judge 传 Ground Truth", "校验数值并记录版本/方向/输入字段"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  },
+  {
+    "case_id": "sparkle-mcp-tool-allowlist-and-safe-adaptation",
+    "repository_id": "sparkle-navigator",
+    "suite_type": "mcp-integration",
+    "question_type": "capability_and_failure_boundary",
+    "difficulty": "hard",
+    "user_input": "McpToolAdapter.adapt 怎样决定一个 MCP 工具能否注册到 Tau？模型看到的名称、能力标记从哪里来，执行时遇到取消、超时、服务器错误或敏感输出怎样处理？",
+    "ground_truth": {
+      "answer_points": [
+        "工具必须在 McpServerConfig.allowed_tools 显式 allowlist 中，且 input_schema 必须是 JSON object；否则适配失败。注册名称由 server_id 和原工具名命名空间化，capabilities 来自 allowlist 中的 access 类型。",
+        "执行器把工具调用转交 MCP Client；已有取消信号会传播为 CancelledError，超时映射为安全 McpToolCallError，MCP is_error 和未启用的 input_required 也作为错误处理。",
+        "描述和文本结果会清理配置密钥、Server URL 与常见 Bearer/命名密钥模式，并按 max_output_chars 截断；图片或其他结构内容也受输出限制/安全适配。"
+      ],
+      "expected_evidence": [
+        {"path": "src/sparkle_navigator/mcp/tool_adapter.py", "line_start": 57, "line_end": 115, "symbols": ["McpToolAdapter.adapt"]},
+        {"path": "src/sparkle_navigator/mcp/tool_adapter.py", "line_start": 117, "line_end": 151, "symbols": ["McpToolAdapter._call_tool"]},
+        {"path": "src/sparkle_navigator/mcp/tool_adapter.py", "line_start": 153, "line_end": 245, "symbols": ["McpToolAdapter._result_content"]}
+      ],
+      "rubric": {"must_mention": ["显式 allowlist 和 object schema", "server/tool 命名空间", "access 映射 capabilities", "取消传播/超时和协议错误转安全异常", "敏感信息清理与输出截断"]}
+    },
+    "provenance": {"verification_status": "needs_human_review", "generator": "ai-source-review-draft", "generator_version": "0.1.0", "source_commit": "114c11068005b79c84b33eaaae65bfae74b4b44c"}
+  }
+]

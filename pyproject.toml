@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sparkle-navigator"
+version = "0.1.0"
+description = "基于 Tau 的代码库理解、编程与智能体评测工作台。"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "LICENSES/*"]
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.13",
+    "anyio>=4.0",
+    "httpx[socks]>=0.27",
+    "mcp>=2.3.0,<3.0",
+    "packaging>=24.0",
+    "pillow>=11.0",
+    "pydantic>=2.11",
+    "pygments>=2.18",
+    "rich>=13.0",
+    "sqlalchemy>=2.0",
+    "textual>=8.2.8",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+semantic = [
+    "fastembed>=0.8.1,<0.9",
+]
+ragas = [
+    "ragas>=0.4.3,<0.5",
+]
+inspect-ai = [
+    "inspect-ai>=0.3.277,<0.4",
+]
+
+[project.scripts]
+tau = "tau_coding.cli:app"
+sparkle = "sparkle_navigator.presentation.cli:app"
+
+[project.urls]
+Repository = "https://github.com/sparkle132561/Sparkle-Navigator"
+Issues = "https://github.com/sparkle132561/Sparkle-Navigator/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/tau_ai",
+    "src/tau_agent",
+    "src/tau_coding",
+    "src/sparkle_navigator",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["tau_ai", "tau_agent", "tau_coding", "sparkle_navigator"]
+
+[[tool.mypy.overrides]]
+module = "pygments.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

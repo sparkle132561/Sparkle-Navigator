@@ -1,0 +1,42 @@
+{
+  "suite_id": "day20-snapshot-evidence-integration-v1",
+  "source_commit": "1c0fac22e97d1abd1a6117502157cb457a1d0c58",
+  "repetitions": 3,
+  "cases": [
+    {
+      "case_id": "native-backend",
+      "user_input": "Explain symbol: NativeBackend",
+      "ground_truth": {
+        "expected_paths": ["src/sparkle_navigator/evaluation/native_backend.py"]
+      }
+    },
+    {
+      "case_id": "regression-analyzer",
+      "user_input": "Explain symbol: RegressionAnalyzer",
+      "ground_truth": {
+        "expected_paths": ["src/sparkle_navigator/evaluation/regression.py"]
+      }
+    },
+    {
+      "case_id": "evaluation-store",
+      "user_input": "Explain symbol: EvaluationStore",
+      "ground_truth": {
+        "expected_paths": ["src/sparkle_navigator/persistence/evaluation_store.py"]
+      }
+    },
+    {
+      "case_id": "report-exporter",
+      "user_input": "Explain symbol: EvaluationReportExporter",
+      "ground_truth": {
+        "expected_paths": ["src/sparkle_navigator/presentation/reports.py"]
+      }
+    },
+    {
+      "case_id": "approval-presenter",
+      "user_input": "Explain symbol: TuiApprovalPresenter",
+      "ground_truth": {
+        "expected_paths": ["src/sparkle_navigator/presentation/tui/tool_approval.py"]
+      }
+    }
+  ]
+}

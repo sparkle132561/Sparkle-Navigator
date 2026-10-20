@@ -1,0 +1,23 @@
+{
+  "suite_id": "codebase-retrieval-smoke-v1",
+  "cases": [
+    {
+      "case_id": "snapshot-manifest",
+      "question": "快照清单关联了什么来源和文件信息？",
+      "query": "commit hashes",
+      "expected_paths": ["src/snapshot.py"]
+    },
+    {
+      "case_id": "keyword-index",
+      "question": "关键词索引怎样检索快照文本？",
+      "query": "fts5 searchable",
+      "expected_paths": ["src/text_index.py"]
+    },
+    {
+      "case_id": "changed-file",
+      "question": "磁盘文件哈希与清单不一致时会怎样？",
+      "query": "manifest rejected",
+      "expected_paths": ["tests/test_snapshot.py"]
+    }
+  ]
+}
