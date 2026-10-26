@@ -2890,6 +2890,8 @@ class CodingSession:
                 append_system_prompt=self._config.append_system_prompt,
                 context_files=self._config.context_files,
                 tool_registrations=self._config.tool_registrations,
+                additional_tool_registrations=self._config.additional_tool_registrations,
+                turn_context_provider=self._config.turn_context_provider,
                 tool_access_policy=self._config.tool_access_policy,
                 resource_paths=self._config.resource_paths,
                 session_id=record.id,

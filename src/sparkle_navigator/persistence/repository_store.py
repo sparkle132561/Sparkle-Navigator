@@ -168,6 +168,13 @@ class RepositoryStore:
             ).scalars().all()
         return tuple(_repository_from_row(row) for row in rows)
 
+    def get_repository_snapshot(self, repository_id: str, snapshot_id: str) -> RepositorySnapshot:
+        """只返回确实由该 Repository 导入过的 Snapshot。"""
+        with Session(self._engine) as session:
+            if session.get(RepositorySnapshotLinkRow, (repository_id, snapshot_id)) is None:
+                raise KeyError("Snapshot 不属于指定 Repository。")
+        return self.get_snapshot(snapshot_id)
+
     def set_repository_trust(self, repository_id: str, *, trusted: bool) -> Repository:
         """持久化宿主明确作出的信任决定，不修改不可变 Snapshot。"""
 

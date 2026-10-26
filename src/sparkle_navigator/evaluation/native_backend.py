@@ -9,12 +9,6 @@ from dataclasses import replace
 from time import perf_counter
 from typing import Protocol
 
-from tau_agent.events import MessageEndEvent, ToolExecutionEndEvent
-from tau_agent.messages import AssistantMessage, sum_usage
-from tau_coding import CodingSession, CodingSessionConfig, TraceRecorder
-from tau_coding.events import CodingSessionEvent
-from tau_coding.trace import TraceEvent
-
 from sparkle_navigator.domain.evaluation import (
     AgentRunFailure,
     AgentRunInput,
@@ -29,6 +23,11 @@ from sparkle_navigator.security.redaction import (
     sanitize_trace_payload,
     sanitize_trace_text,
 )
+from tau_agent.events import MessageEndEvent, ToolExecutionEndEvent
+from tau_agent.messages import AssistantMessage, sum_usage
+from tau_coding import CodingSession, CodingSessionConfig, TraceRecorder
+from tau_coding.events import CodingSessionEvent
+from tau_coding.trace import TraceEvent
 
 
 class CodingSessionConfigFactory(Protocol):
@@ -174,6 +173,9 @@ class NativeBackend:
             usage=usage,
             timing=timing,
             failure=failure,
+            final_stop_reason=(
+                final_message.stop_reason if final_message is not None else None
+            ),
         )
         if cancelled:
             raise AgentRunCancelled(output)

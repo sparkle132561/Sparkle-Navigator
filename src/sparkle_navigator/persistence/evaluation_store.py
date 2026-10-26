@@ -28,8 +28,8 @@ from sparkle_navigator.domain.evaluation import (
     ExperimentRecord,
     ExperimentSnapshot,
     ExperimentStatus,
-    RegressionResult,
     MetricDirection,
+    RegressionResult,
     RunTraceEvent,
 )
 from sparkle_navigator.domain.evidence import CodeEvidence
@@ -40,8 +40,8 @@ from sparkle_navigator.persistence.models import (
     EvaluationComparisonRow,
     EvaluationEventRow,
     EvaluationExperimentRow,
-    EvaluationResultRow,
     EvaluationRegressionResultRow,
+    EvaluationResultRow,
     EvaluationRunEvidenceRow,
     EvaluationRunTraceEventRow,
 )
@@ -280,6 +280,7 @@ class EvaluationStore:
                         failure_message=row.failure_message,
                         usage=_run_usage_from_json(row.usage_json),
                         timing=_run_timing_from_json(row.timing_json),
+                        final_stop_reason=row.final_stop_reason,
                         results=results,
                         created_at=_aware_datetime(row.created_at),
                         updated_at=_aware_datetime(row.updated_at),
@@ -794,6 +795,7 @@ def _persist_run_output(
     run.timing_json = (
         _json_dumps(asdict(output.timing)) if output.timing is not None else None
     )
+    run.final_stop_reason = output.final_stop_reason
     run.failure_reason = output.failure.code if output.failure is not None else None
     run.failure_message = (
         sanitize_trace_text(output.failure.message)

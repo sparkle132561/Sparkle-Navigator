@@ -13,7 +13,7 @@ from enum import Enum, auto
 from inspect import isawaitable
 from io import StringIO
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, TypeVar, cast
 
 from rich.console import Console, Group
 from rich.style import Style
@@ -67,7 +67,7 @@ from tau_agent.provider_events import (
     ThinkingDeltaEvent,
     ThinkingEndEvent,
 )
-from tau_agent.tools import AgentTool
+from tau_agent.tools import AgentTool, AgentToolResult
 from tau_agent.types import JSONValue
 from tau_coding.catalog_loader import save_user_catalog_entries
 from tau_coding.commands import (
@@ -93,6 +93,7 @@ from tau_coding.extensions.api import (
     SidebarContent,
     SlotWidgetContent,
     SlotWidgetFactory,
+    ToolResultMarkup,
 )
 from tau_coding.oauth import login_openai_codex
 from tau_coding.oauth_registry import get_oauth_provider, oauth_provider_ids
@@ -140,6 +141,9 @@ from tau_coding.session import (
     parse_terminal_command,
 )
 from tau_coding.session_manager import CodingSessionRecord, SessionManager
+
+if TYPE_CHECKING:
+    from tau_coding.extensions.runtime import ExtensionRuntime
 from tau_coding.session_preparation import prepare_coding_session
 from tau_coding.shell_config import load_shell_settings
 from tau_coding.skills import Skill
@@ -161,7 +165,6 @@ from tau_coding.tui.config import (
     load_tui_settings,
     save_tui_settings,
 )
-from tau_coding.tui.product import TuiProductContext, TuiProductPresentation
 from tau_coding.tui.file_drop import normalize_dropped_paths
 from tau_coding.tui.local_backends import (
     LocalBackendPickerScreen,
@@ -170,6 +173,7 @@ from tau_coding.tui.local_backends import (
     LocalConfirmScreen,
     LocalSearchResultsScreen,
 )
+from tau_coding.tui.product import ProductSessionChanged, TuiProductContext, TuiProductPresentation
 from tau_coding.tui.project_trust import ProjectTrustScreen, prompt_project_trust
 from tau_coding.tui.state import TuiState, format_terminal_command_result_block
 from tau_coding.tui.terminal_notification import TerminalNotificationController
@@ -4326,11 +4330,16 @@ class TauTuiApp(App[None]):
             self.title = product_presentation.title
         self._bindings = BindingsMap(_app_bindings(self.tui_settings.keybindings))
         self.session = session
+        self._product_sessions: list[CodingSession] = [session]
+        self._product_session_switching = False
         if product_presentation is not None:
             self._product_context = TuiProductContext(
-                session=session,
+                _get_session=lambda: self.session,
                 theme=self.tui_settings.resolved_theme,
                 _confirm=self.confirm,
+                _replace_session=self.replace_product_session,
+                _is_busy=lambda: self._product_session_switching
+                or self._is_agent_or_queue_active() or self._is_compaction_active(),
                 _notify=lambda message, level: self._notify(
                     message,
                     severity={
@@ -4653,6 +4662,64 @@ class TauTuiApp(App[None]):
             return
         await super().on_event(event)
 
+    async def replace_product_session(self, session: CodingSession) -> None:
+        """切换产品 Session，同时重建原生聊天状态；保留旧 Session 供恢复。"""
+        if self._product_session_switching or self._is_agent_or_queue_active() or self._is_compaction_active():
+            raise ValueError("Agent 正在运行，请先取消或等待完成后切换 Repository。")
+        self._product_session_switching = True
+        previous = self.session
+        try:
+            presentation = self.product_presentation
+            if presentation is not None and presentation.before_session_activate is not None:
+                await presentation.before_session_activate(session, None)
+            if self._is_agent_or_queue_active() or self._is_compaction_active():
+                raise ValueError("Agent 正在运行，请先取消或等待完成后切换 Repository。")
+            if session is previous:
+                return
+            self._display_product_session(session)
+            try:
+                if session in self._product_sessions:
+                    await session.extension_runtime.emit_session_start("resume")
+                else:
+                    await session.emit_pending_session_start()
+            except BaseException:
+                self._display_product_session(previous)
+                await previous.extension_runtime.emit_session_start("resume")
+                raise
+            if session not in self._product_sessions:
+                self._product_sessions.append(session)
+        finally:
+            self._product_session_switching = False
+
+    def _display_product_session(self, session: CodingSession) -> None:
+        """绑定运行时桥接并用该 Session 的历史重绘原生聊天区。"""
+        from tau_coding.extensions.api import NullUiBridge
+
+        previous_runtime = self.session.extension_runtime
+        previous_runtime.set_turn_requested_callback(None)
+        self._clear_extension_components()
+        previous_runtime.set_ui_bridge(NullUiBridge())
+        self.session = session
+        session.set_project_trust_prompt(self.prompt_project_trust)
+        self.state.clear()
+        self.state.set_skills(session.skills)
+        self._load_session_messages_from_session()
+        self._connect_extension_runtime(session)
+        self._reload_session_themes()
+        self._completion_state = CompletionState()
+        self.query_one("#prompt", PromptInput).text = ""
+        self._refresh_completions()
+        self._refresh()
+
+    async def close_product_sessions(self) -> None:
+        """退出时关闭当前及保留的 Session，逐一释放各自的资源。"""
+        results = await asyncio.gather(
+            *(session.aclose() for session in self._product_sessions), return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
     def on_unmount(self) -> None:
         """Stop activity animations and drop extension widgets on teardown."""
         if self._activity_timer is not None:
@@ -4755,6 +4822,9 @@ class TauTuiApp(App[None]):
         *,
         streaming_behavior: Literal["steer", "follow_up"],
     ) -> None:
+        if self._product_session_switching:
+            self._notify("正在准备 Session，请稍候再提交。", severity="warning")
+            return
         prompt = self.query_one("#prompt", PromptInput)
         raw_text = prompt.text_for_submission()
 
@@ -5119,7 +5189,10 @@ class TauTuiApp(App[None]):
         # Let tool calls render through their tool's render_call, if any.
         self.state.tool_call_renderer = runtime.render_tool_call
         # And tool results through their tool's render_result, if any.
-        self.state.tool_result_renderer = runtime.render_tool_result
+        # Extension tools resolve through the runtime registry; tools installed
+        # via session registrations (e.g. product snapshot tools) fall back to
+        # their own render_result so every session tool shares one contract.
+        self.state.tool_result_renderer = _session_tool_result_renderer(runtime, session)
 
     def _on_extension_turn_requested(
         self,
@@ -5883,6 +5956,7 @@ class TauTuiApp(App[None]):
     ) -> None:
         """Run one prompt and stream session events into the TUI state."""
         active_run_id = self._prompt_run_id if run_id is None else run_id
+        turn_assistant_messages: list[AssistantMessage] = []
         try:
             async for event in self.session.prompt(
                 text, source=source, custom_type=custom_type, details=details
@@ -5915,6 +5989,13 @@ class TauTuiApp(App[None]):
                 ):
                     _attach_diagnostic_log_path_to_error(self.state, self.session)
                 await self._apply_streaming_transcript_event(event)
+                if isinstance(event, MessageEndEvent) and isinstance(
+                    event.message, AssistantMessage
+                ):
+                    turn_assistant_messages.append(event.message)
+                elif isinstance(event, AgentSettledEvent):
+                    await self._append_run_status(turn_assistant_messages)
+                    turn_assistant_messages.clear()
                 if isinstance(event, AgentSettledEvent) and not self._app_has_focus:
                     self._terminal_notification.notify_turn_finished()
         except Exception as exc:  # noqa: BLE001 - surface unexpected worker errors in the TUI
@@ -5930,6 +6011,52 @@ class TauTuiApp(App[None]):
             self._clear_optimistic_user_messages(run_id=active_run_id)
             if active_run_id == self._prompt_run_id:
                 self._prompt_worker = None
+
+    async def _append_run_status(self, turn_messages: Sequence[AssistantMessage]) -> None:
+        """Append the product's one-line run summary for a settled turn."""
+        presentation = self.product_presentation
+        formatter = (
+            presentation.run_status_formatter if presentation is not None else None
+        )
+        if formatter is None or not turn_messages:
+            return
+        status = formatter(tuple(turn_messages), self.session)
+        if isawaitable(status):
+            status = await status
+        if not status:
+            return
+        self.state.add_item("status", status)
+        self._refresh()
+
+    def action_view_product_evidence(self, key: str) -> None:
+        """Open the product's read-only viewer for clickable evidence markup."""
+        presentation = self.product_presentation
+        loader = (
+            presentation.evidence_viewer if presentation is not None else None
+        )
+        if loader is None:
+            return
+        self.run_worker(
+            self._open_product_evidence_viewer(loader, key),
+            exclusive=False,
+        )
+
+    async def _open_product_evidence_viewer(
+        self,
+        loader: Callable[[str], Awaitable[tuple[str, str] | None]],
+        key: str,
+    ) -> None:
+        resolved = await loader(key)
+        if resolved is None:
+            return
+        title, body = resolved
+        self.push_screen(
+            CommandOutputScreen(
+                title,
+                body,
+                theme=self.tui_settings.resolved_theme,
+            )
+        )
 
     async def _apply_streaming_transcript_event(self, event: CodingSessionEvent) -> None:
         """Apply an agent event to mounted transcript widgets without full redraws."""
@@ -6479,8 +6606,28 @@ class TauTuiApp(App[None]):
 
     async def _resume_session(self, session_id: str) -> None:
         try:
+            if self.product_presentation is not None:
+                retained = next(
+                    (item for item in self._product_sessions if item.session_id == session_id), None,
+                )
+                if retained is not None:
+                    await self.replace_product_session(retained)
+                    self._notify(f"Resumed session: {session_id}")
+                    self._notify_product_session_changed()
+                    return
+                manager = self.session.session_manager
+                record = manager.get_session(session_id) if manager is not None else None
+                if record is not None and Path(record.cwd).resolve() != self.session.cwd.resolve():
+                    raise ValueError("请先在 Workspace 选择目标 Repository，再恢复它的 Session。")
+                revalidate = self.product_presentation.before_session_activate
+                if record is not None and revalidate is not None:
+                    await revalidate(self.session, record)
             previous_cwd = Path(self.session.cwd).resolve()
             resume_message = await self.session.resume(session_id)
+            if self.product_presentation is not None:
+                revalidate = self.product_presentation.before_session_activate
+                if revalidate is not None:
+                    await revalidate(self.session, None)
             self._reload_session_themes()
             self.state.clear()
             self.state.set_skills(self.session.skills)
@@ -6489,6 +6636,7 @@ class TauTuiApp(App[None]):
             if current_cwd != previous_cwd:
                 resume_message = f"{resume_message} ({_short_path(current_cwd)})"
             self._notify(resume_message)
+            self._notify_product_session_changed()
         except Exception as exc:  # noqa: BLE001 - surface command failures in the TUI
             self._notify(f"Error: {exc}", severity="error")
         self._refresh()
@@ -6591,13 +6739,24 @@ class TauTuiApp(App[None]):
             return
         try:
             await new_session()
+            if self.product_presentation is not None:
+                revalidate = self.product_presentation.before_session_activate
+                if revalidate is not None:
+                    await revalidate(self.session, None)
             self._reload_session_themes()
             self.state.clear()
             self.state.set_skills(self.session.skills)
             self._load_session_messages_from_session()
+            self._notify_product_session_changed()
         except Exception as exc:  # noqa: BLE001 - surface command failures in the TUI
             self._notify(f"Error: {exc}", severity="error")
         self._refresh()
+
+    def _notify_product_session_changed(self) -> None:
+        if self.product_presentation is not None:
+            for selector in ("#product-workspace-panel", "#product-evaluation-panel"):
+                for panel in self.query_one(selector).children:
+                    panel.post_message(ProductSessionChanged())
 
     def _apply_selected_completion(self, value: str) -> str | None:
         item = self._completion_state.selected
@@ -8452,6 +8611,7 @@ async def run_tui_app(
         )
         initial_provider = LoginRequiredProvider(startup_message)
     session: CodingSession | None = None
+    app: TauTuiApp | None = None
     try:
         index_on_first_persist = False
         if record is None:
@@ -8565,7 +8725,11 @@ async def run_tui_app(
                 set_trust_prompt(prompt_trust)
         await app.run_async()
     finally:
-        if session is not None:
+        if app is not None and hasattr(app, "close_product_sessions"):
+            await app.close_product_sessions()
+            initial_provider = None
+            session = app.session
+        elif session is not None:
             close_session = getattr(session, "aclose", None)
             if close_session is not None:
                 await close_session()
@@ -8583,3 +8747,39 @@ async def run_tui_app(
     if active_session_id is None or manager.get_session(active_session_id) is None:
         return None
     return active_session_id
+
+
+def _session_tool_result_renderer(
+    runtime: ExtensionRuntime,
+    session: CodingSession,
+) -> ToolResultMarkup:
+    """Combine extension renderers with session-registered tools' render_result.
+
+    The extension runtime only resolves tools its extensions registered; tools
+    that arrived through session registrations (e.g. additional_tool_registrations)
+    still carry render_result, so they resolve here after the runtime declines.
+    Rebuilt per connected session. A renderer that raises or returns a non-string
+    yields None so the frontend falls back to its generic result block.
+    """
+
+    def render(
+        tool_name: str,
+        result: AgentToolResult,
+        expanded: bool,
+    ) -> str | None:
+        markup = runtime.render_tool_result(tool_name, result, expanded)
+        if markup is not None:
+            return markup
+        for registration in session.registered_tools:
+            if registration.tool.name != tool_name:
+                continue
+            renderer = registration.tool.render_result
+            if renderer is None:
+                return None
+            try:
+                return renderer(result, expanded=expanded)
+            except Exception:  # noqa: BLE001 - a renderer must never crash the frontend
+                return None
+        return None
+
+    return render

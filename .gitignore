@@ -34,6 +34,7 @@ USER-PROFILE.md
 LEARNING-PROTOCOL.md
 .pytest-*/
 .p20f/
+/pytest-of-*/
 *.sqlite
 *.sqlite3
 *.sqlite3-*

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,14 +23,24 @@ from textual.widgets import (
     TabPane,
     TabbedContent,
 )
+from textual.worker import Worker
 
-from sparkle_navigator.domain.evidence import SnapshotOverview
+from tau_coding.tui.product import ProductSessionChanged, TuiProductContext
+
+from sparkle_navigator.domain.evidence import (
+    SnapshotAnswer,
+    SnapshotExplanation,
+    SnapshotImpact,
+    SnapshotOverview,
+    SnapshotTrace,
+)
 from sparkle_navigator.domain.evaluation import (
     AgentRunDetail,
     ExperimentComparison,
     ExperimentSnapshot,
 )
-from sparkle_navigator.domain.memory import ProjectFactStatus
+from sparkle_navigator.domain.memory import ProjectFact, ProjectFactStatus
+from sparkle_navigator.domain.repository import Repository
 from sparkle_navigator.domain.tool_profile import ToolProfile
 from sparkle_navigator.evaluation.core import ExperimentHandle
 from sparkle_navigator.evaluation.live_provider import (
@@ -38,6 +49,7 @@ from sparkle_navigator.evaluation.live_provider import (
     LIVE_PROVIDER_TIMEOUT_SECONDS,
 )
 from sparkle_navigator.presentation.tui.services import SparklePresentationServices
+from sparkle_navigator.presentation.tui.session_binding import WorkspaceSessions
 from sparkle_navigator.presentation.tui.tool_approval import ApprovalUi
 from sparkle_navigator.runtime.tool_profile import (
     ProfileSessionControl,
@@ -160,17 +172,22 @@ class WorkspaceView(VerticalScroll):
         *,
         context: SparkleTuiContext,
         services: SparklePresentationServices,
+        sessions: WorkspaceSessions | None = None,
     ) -> None:
         super().__init__(id="sparkle-workspace-view")
         self._product_context = context
         self._services = services
-        self._repositories = {}
-        self._selected_repository = None
+        self._repositories: dict[str, Repository] = {}
+        self._selected_repository: Repository | None = None
+        self._sessions = sessions
+        self._operation_worker: Worker[None] | None = None
+        self._operation_active = False
 
     def compose(self) -> ComposeResult:
         yield Static("Workspace", classes="panel-title")
         yield Static("固定 Snapshot · 只读浏览", classes="panel-subtitle")
         yield Static("尚未选择 Snapshot。", id="workspace-status", markup=False)
+        yield Static("Agent 尚未绑定 Snapshot。", id="workspace-agent-binding", markup=False)
         yield Static("Snapshot 文件", classes="section-title")
         yield Static("导入 Repository 后显示顶层路径。", id="workspace-file-tree", markup=False)
         yield Static("Snapshot 概览证据", classes="section-title")
@@ -183,6 +200,7 @@ class WorkspaceView(VerticalScroll):
         ):
             yield Input(placeholder="本地 Git 路径或 Git URL", id="workspace-source")
             yield Button("导入并索引", id="workspace-import")
+            yield Button("取消准备", id="workspace-cancel")
             yield Select(
                 [],
                 allow_blank=True,
@@ -239,10 +257,21 @@ class WorkspaceView(VerticalScroll):
             yield Static("", id="workspace-summary", markup=False)
 
     async def on_mount(self) -> None:
+        if self._sessions is not None and isinstance(self._product_context, TuiProductContext):
+            await self._sessions.bind_initial(self._product_context)
         await self.refresh_repositories()
         await self._refresh_session_summary()
 
-    async def refresh_repositories(self) -> None:
+    async def on_product_session_changed(self, _event: ProductSessionChanged) -> None:
+        binding = (
+            self._sessions.binding_for(self._product_context.session)
+            if self._sessions is not None and isinstance(self._product_context, TuiProductContext)
+            else None
+        )
+        await self.refresh_repositories(binding[0] if binding is not None else None)
+        self._show_agent_binding()
+
+    async def refresh_repositories(self, selected_id: str | None = None) -> None:
         status = self.query_one("#workspace-status", Static)
         status.update("正在读取本机 Repository 目录…")
         try:
@@ -251,36 +280,139 @@ class WorkspaceView(VerticalScroll):
                 repository.repository_id: repository for repository in repositories
             }
             selector = self.query_one("#workspace-repository", Select)
-            selector.set_options(
-                (
-                    f"{repository.name} · {repository.current_snapshot_id[:10] if repository.current_snapshot_id else '无 Snapshot'}",
-                    repository.repository_id,
+            with selector.prevent(Select.Changed):
+                selector.set_options(
+                    (
+                        f"{repository.name} · {repository.current_snapshot_id[:10] if repository.current_snapshot_id else '无 Snapshot'}",
+                        repository.repository_id,
+                    )
+                    for repository in repositories
                 )
-                for repository in repositories
-            )
             current = await self._services.repository_for_cwd(self._product_context.cwd)
-            selected = current or (repositories[0] if repositories else None)
+            previous_id = (
+                self._selected_repository.repository_id
+                if self._selected_repository is not None else None
+            )
+            preferred_id = selected_id or previous_id
+            selected = (
+                self._repositories.get(preferred_id) if preferred_id is not None else None
+            ) or current
+            if selected is None and self._sessions is None:
+                selected = repositories[0] if repositories else None
             if selected is None:
                 self._selected_repository = None
                 status.update("尚无导入的 Repository。输入 Git 路径或 URL 后可创建固定 Snapshot。")
+                if repositories:
+                    status.update("未选仓库。请选择已导入 Repository，或输入路径导入。")
+                self._show_agent_binding()
                 return
-            selector.value = selected.repository_id
+            with selector.prevent(Select.Changed):
+                selector.value = selected.repository_id
             await self._select_repository(selected.repository_id)
         except Exception as exc:
             status.update(_safe_error(exc))
 
     async def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "workspace-repository" and isinstance(event.value, str):
-            await self._select_repository(event.value)
+            repository_id = event.value
+            if not self._start_operation(lambda: self._activate_repository(repository_id)):
+                selector: Select[str] = self.query_one("#workspace-repository", Select)
+                with selector.prevent(Select.Changed):
+                    if self._selected_repository is None:
+                        selector.clear()
+                    else:
+                        selector.value = self._selected_repository.repository_id
+
+    def _start_operation(self, operation: Callable[[], Awaitable[None]]) -> bool:
+        if self._operation_active:
+            self.query_one("#workspace-status", Static).update(
+                "正在准备 Repository，请等待或取消。"
+            )
+            return False
+        if self._product_context.session_control.is_running:
+            self.query_one("#workspace-status", Static).update(
+                "Agent 正在运行，请先取消或等待完成后切换 Repository。"
+            )
+            return False
+        self._operation_active = True
+        self._operation_worker = self.run_worker(
+            self._run_operation(operation), group="workspace-session",
+        )
+        return True
+
+    async def _run_operation(self, operation: Callable[[], Awaitable[None]]) -> None:
+        try:
+            await operation()
+        except asyncio.CancelledError:
+            if self.is_mounted:
+                self.query_one("#workspace-status", Static).update(
+                    "已取消准备；原 Agent Session 保留，已创建的 Snapshot 可刷新后重试。"
+                )
+            raise
+        except Exception as exc:
+            self.query_one("#workspace-status", Static).update(_safe_error(exc))
+        finally:
+            self._operation_active = False
+            if self.is_mounted:
+                self._show_agent_binding()
+
+    def _show_agent_binding(self) -> None:
+        if self._sessions is None or not isinstance(self._product_context, TuiProductContext):
+            return
+        session = self._product_context.session
+        binding = self._sessions.binding_for(session)
+        self.query_one("#workspace-agent-binding", Static).update(
+            f"Agent Repository {binding[0]}\nSnapshot {binding[1]}\nSession {session.session_id}"
+            if binding else "Agent 尚未绑定 Snapshot；请选择或导入 Repository。"
+        )
+
+    async def _activate_repository(
+        self, repository_id: str, *, rebuild_indexes: bool = False,
+    ) -> None:
+        await self._select_repository(repository_id)
+        if self._sessions is None or not isinstance(self._product_context, TuiProductContext):
+            return
+        repository = self._repositories[repository_id]
+        if repository.current_snapshot_id is None:
+            return
+        status = self.query_one("#workspace-status", Static)
+        if rebuild_indexes or self._sessions.binding_for(self._product_context.session) != (
+            repository_id, repository.current_snapshot_id,
+        ):
+            status.update("正在构建 Snapshot 索引…")
+            try:
+                await self._services.build_snapshot_indexes(repository.current_snapshot_id)
+            except Exception as exc:
+                status.update(
+                    f"Snapshot 已创建但索引失败：{_safe_error(exc)}；可点击构建索引重试。"
+                )
+                return
+            status.update("正在准备 Agent Session…")
+        try:
+            await self._sessions.activate(repository_id, self._product_context)
+        except Exception as exc:
+            status.update(f"Session 准备失败，原 Session 保留：{_safe_error(exc)}")
+            return
+        await self._select_repository(repository_id)
+        self._show_agent_binding()
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
         if button_id == "workspace-refresh":
             await self.refresh_repositories()
         elif button_id == "workspace-import":
-            await self._import_repository()
+            self._start_operation(self._import_repository)
+        elif button_id == "workspace-cancel":
+            if self._operation_worker is not None and self._operation_active:
+                self._operation_worker.cancel()
         elif button_id == "workspace-index":
-            await self._build_indexes()
+            if self._sessions is None:
+                self._start_operation(self._build_indexes)
+            elif self._selected_repository is not None:
+                repository_id = self._selected_repository.repository_id
+                self._start_operation(
+                    lambda: self._activate_repository(repository_id, rebuild_indexes=True)
+                )
         elif button_id == "workspace-copy":
             await self._open_working_copy()
         elif button_id == "workspace-trust":
@@ -310,15 +442,24 @@ class WorkspaceView(VerticalScroll):
             )
             return
         cwd_repository = await self._services.repository_for_cwd(self._product_context.cwd)
+        binding = (
+            self._sessions.binding_for(self._product_context.session)
+            if self._sessions is not None and isinstance(self._product_context, TuiProductContext)
+            else None
+        )
+        bound = (
+            binding == (repository.repository_id, repository.current_snapshot_id)
+            if self._sessions is not None else (
+                cwd_repository is not None
+                and cwd_repository.repository_id == repository.repository_id
+            )
+        )
         session_binding = (
             "当前 Tau Session 已绑定此 Repository。"
-            if cwd_repository is not None
-            and cwd_repository.repository_id == repository.repository_id
-            else "Agent 工具仍绑定启动 Session 的 Snapshot；切换 Repository 后请用 --repository-id 重启。"
+            if bound else "侧栏选中此 Repository；Agent 的实际绑定见上方。"
         )
         working_copy = self._services.is_managed_working_copy(repository, self._product_context.cwd)
         status = self.query_one("#workspace-status", Static)
-        bound = cwd_repository is not None and cwd_repository.repository_id == repository.repository_id
         status.update(
             f"{repository.name}\n"
             f"Snapshot {repository.current_snapshot_id[:12]}\n"
@@ -335,6 +476,7 @@ class WorkspaceView(VerticalScroll):
         await self._show_profile()
         await self._run_snapshot_query("overview")
         await self._refresh_session_summary()
+        self._show_agent_binding()
 
     async def _import_repository(self) -> None:
         raw_source = self.query_one("#workspace-source", Input).value.strip()
@@ -351,11 +493,12 @@ class WorkspaceView(VerticalScroll):
             status.update(
                 f"Snapshot 已冻结：{imported.snapshot.snapshot_id[:16]}… 正在构建索引。"
             )
-            await self._services.build_snapshot_indexes(imported.snapshot.snapshot_id)
-            await self.refresh_repositories()
-            selector = self.query_one("#workspace-repository", Select)
-            selector.value = imported.repository.repository_id
-            await self._select_repository(imported.repository.repository_id)
+            await self.refresh_repositories(imported.repository.repository_id)
+            if self._sessions is not None:
+                await self._activate_repository(imported.repository.repository_id)
+            else:
+                await self._services.build_snapshot_indexes(imported.snapshot.snapshot_id)
+                await self._select_repository(imported.repository.repository_id)
             self.query_one("#workspace-source", Input).value = ""
         except Exception as exc:
             status.update(f"导入或索引失败：{_safe_error(exc)}")
@@ -376,6 +519,9 @@ class WorkspaceView(VerticalScroll):
     async def _open_working_copy(self) -> None:
         repository = self._selected_repository
         if repository is None:
+            return
+        if self._sessions is not None:
+            self._start_operation(lambda: self._activate_repository(repository.repository_id))
             return
         try:
             working_copy = await self._services.open_working_copy(repository.repository_id)
@@ -400,8 +546,23 @@ class WorkspaceView(VerticalScroll):
         )
         if not approved:
             return
+        if self._operation_active:
+            self.query_one("#workspace-status", Static).update(
+                "正在准备 Repository，请等待完成后修改信任状态。"
+            )
+            return
         session_control = self._product_context.session_control
         policy = session_control.tool_access_policy
+        binding = (
+            self._sessions.binding_for(self._product_context.session)
+            if self._sessions is not None and isinstance(self._product_context, TuiProductContext)
+            else None
+        )
+        bound_to_selection = (
+            binding is not None and binding[0] == repository.repository_id
+            if self._sessions is not None
+            else True
+        )
         if isinstance(policy, ToolProfileRuntime) and session_control.is_running:
             self.query_one("#workspace-status", Static).update(
                 "Agent 正在运行，信任状态暂不能更改；请等待本轮结束后重试。"
@@ -409,21 +570,24 @@ class WorkspaceView(VerticalScroll):
             return
 
         previous_trust = repository.trusted
+        self._operation_active = True
         try:
             updated_repository = await self._services.set_repository_trust(
                 repository.repository_id,
                 trusted=trusted,
             )
-            if isinstance(policy, ToolProfileRuntime):
+            if isinstance(policy, ToolProfileRuntime) and bound_to_selection:
                 try:
-                    policy.set_repository_trusted(
-                        session_control,
-                        trusted=trusted
-                        and self._services.is_managed_working_copy(
-                            updated_repository,
-                            self._product_context.cwd,
-                        ),
-                    )
+                    if self._sessions is not None and isinstance(self._product_context, TuiProductContext):
+                        await self._sessions.revalidate_trust(self._product_context.session)
+                    else:
+                        policy.set_repository_trusted(
+                            session_control,
+                            trusted=trusted
+                            and self._services.is_managed_working_copy(
+                                updated_repository, self._product_context.cwd,
+                            ),
+                        )
                 except Exception as policy_error:
                     try:
                         await self._services.set_repository_trust(
@@ -444,6 +608,8 @@ class WorkspaceView(VerticalScroll):
             self.query_one("#workspace-status", Static).update(
                 f"信任状态未更新：{_safe_error(exc)}"
             )
+        finally:
+            self._operation_active = False
 
     async def _set_profile(self, profile: ToolProfile) -> None:
         policy = self._product_context.session_control.tool_access_policy
@@ -476,6 +642,7 @@ class WorkspaceView(VerticalScroll):
         snapshot_id = repository.current_snapshot_id
         result_widget = self.query_one("#workspace-result", Static)
         result_widget.update(f"正在运行 {operation}…")
+        result: SnapshotOverview | SnapshotAnswer | SnapshotExplanation | SnapshotTrace | SnapshotImpact
         try:
             if operation == "overview":
                 result = await self._services.overview(snapshot_id)
@@ -555,7 +722,7 @@ class WorkspaceView(VerticalScroll):
             if name.startswith("mcp__")
         )
         repository = self._selected_repository
-        facts = ()
+        facts: tuple[ProjectFact, ...] = ()
         if repository is not None and repository.current_snapshot_id is not None:
             try:
                 facts = await self._services.project_facts_for_snapshot(
@@ -1054,6 +1221,7 @@ def _format_run_detail(detail: AgentRunDetail) -> str:
             "reason": run.failure_reason,
             "message": run.failure_message,
         },
+        "final_stop_reason": run.final_stop_reason,
         "usage": asdict(run.usage) if run.usage else None,
         "timing": asdict(run.timing) if run.timing else None,
         "results": [

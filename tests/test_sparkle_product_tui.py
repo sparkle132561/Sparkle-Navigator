@@ -203,6 +203,8 @@ async def _sparkle_workspace_agent_and_evaluation_stay_together(
             await pilot.pause()
             assert await asyncio.wait_for(pilot.click("#workspace-import", offset=(2, 1)), timeout=5)
             await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             assert source_input.value == "", app.query_one("#workspace-status").render().plain
             assert "README.md" in app.query_one("#workspace-evidence").render().plain
 

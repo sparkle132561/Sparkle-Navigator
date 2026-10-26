@@ -80,6 +80,7 @@ def _export_example(
             provider_duration_ms=30,
             time_to_first_output_ms=8,
         ),
+        final_stop_reason=None,
         results=(result,),
         created_at=timestamp,
         updated_at=timestamp,

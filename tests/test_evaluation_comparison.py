@@ -183,6 +183,7 @@ def _snapshot(
             failure_message=None,
             usage=_usage(token_usage),
             timing=None,
+            final_stop_reason=None,
             results=(
                 EvaluationResult(
                     metric_name=metric,

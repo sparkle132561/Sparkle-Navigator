@@ -1,0 +1,20 @@
+{
+ "dataset_id": "sparkle-phase3-ab",
+ "version": "0.1.0",
+ "split": "experiment",
+ "review": {
+  "status": "mixed",
+  "inherited": "16 cases from tau-review-v0.1 (user_approved_ai_review, 2026-10-10)",
+  "new": "4 cases ai_review_draft_pending_user (2026-10-24)"
+ },
+ "repositories": [
+  {
+   "repository_id": "tau-v0.4.4",
+   "url": "https://github.com/huggingface/tau",
+   "source_commit": "a8f18e7bc645d09d47d40b21bc602df97f2579fd",
+   "license": "MIT"
+  }
+ ],
+ "cases_file": "cases.json",
+ "case_count": 20
+}

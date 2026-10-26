@@ -35,6 +35,16 @@ class CodeEvidence:
     symbol_name: str | None = None
     relationship_type: RelationshipType | None = None
 
+    @property
+    def location(self) -> str:
+        """用于展示的 path:line 定位串；无行号时仅返回路径。"""
+
+        if self.line_start is None:
+            return self.path
+        if self.line_end is None or self.line_end == self.line_start:
+            return f"{self.path}:{self.line_start}"
+        return f"{self.path}:{self.line_start}-{self.line_end}"
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceSet:

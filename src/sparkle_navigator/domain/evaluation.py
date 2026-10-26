@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Mapping
 
 from sparkle_navigator.domain.evidence import CodeEvidence
 
@@ -129,6 +129,9 @@ class AgentRunOutput:
     usage: AgentRunUsage | None = None
     timing: AgentRunTiming | None = None
     failure: AgentRunFailure | None = None
+    # 最终非 toolUse 消息的 Provider stop_reason（如 stop/length/error/aborted）；
+    # 截断（length）不是失败，但必须可与正常完成区分。
+    final_stop_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +245,7 @@ class AgentRunRecord:
     failure_message: str | None
     usage: AgentRunUsage | None
     timing: AgentRunTiming | None
+    final_stop_reason: str | None
     results: tuple[EvaluationResult, ...]
     created_at: datetime
     updated_at: datetime

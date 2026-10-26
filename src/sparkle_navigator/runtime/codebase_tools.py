@@ -8,6 +8,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, replace
 from pathlib import Path
 
+from sparkle_navigator.context.snapshot_explorer import SnapshotExplorer
+from sparkle_navigator.runtime.evidence_rendering import (
+    render_snapshot_evidence_result,
+    snapshot_evidence_details,
+)
 from tau_agent.messages import TextContent
 from tau_agent.tools import (
     AgentTool,
@@ -18,10 +23,6 @@ from tau_agent.tools import (
 from tau_agent.types import JSONValue
 from tau_coding.session import CodingSessionConfig
 from tau_coding.tools import CodingToolRegistration
-
-from sparkle_navigator.context.snapshot_explorer import SnapshotExplorer
-from sparkle_navigator.domain.evidence import CodeEvidence
-
 
 ToolOperation = Callable[[Mapping[str, JSONValue]], Awaitable[object]]
 _TOOL_SOURCE = "sparkle.context-engine"
@@ -180,13 +181,17 @@ def _agent_tool(
         if signal is not None and signal.is_cancelled():
             raise asyncio.CancelledError
         result = await operation(arguments)
+        evidence = getattr(result, "evidence", None)
+        items = getattr(evidence, "items", None)
         return AgentToolResult(
             content=[
                 TextContent(
                     text=json.dumps(asdict(result), ensure_ascii=False, sort_keys=True)
                 )
             ],
-            details=_tool_result_details(result),
+            details=snapshot_evidence_details(items)
+            if isinstance(items, tuple)
+            else None,
         )
 
     return AgentTool(
@@ -197,20 +202,8 @@ def _agent_tool(
         execute_fn=execute,
         execution_mode="sequential",
         prompt_snippet="只引用此工具返回的 Snapshot 证据；证据不足时明确说明，不要猜测。",
+        render_result=render_snapshot_evidence_result,
     )
-
-
-def _tool_result_details(result: object) -> JSONValue:
-    evidence = getattr(result, "evidence", None)
-    items = getattr(evidence, "items", None)
-    if not isinstance(items, tuple):
-        return None
-    return {
-        "sparkle_code_evidence_version": 1,
-        "code_evidence": [
-            asdict(item) for item in items if isinstance(item, CodeEvidence)
-        ]
-    }
 
 
 def _required_string(arguments: Mapping[str, JSONValue], name: str) -> str:

@@ -151,6 +151,12 @@ class SparklePresentationServices:
         store = await asyncio.to_thread(self._repository_store)
         return await asyncio.to_thread(store.get_repository, repository_id)
 
+    async def get_repository_snapshot(
+        self, repository_id: str, snapshot_id: str,
+    ) -> RepositorySnapshot:
+        store = await asyncio.to_thread(self._repository_store)
+        return await asyncio.to_thread(store.get_repository_snapshot, repository_id, snapshot_id)
+
     async def repository_for_cwd(self, cwd: Path) -> Repository | None:
         """按来源目录或受管 Working Copy 根目录匹配当前 Repository。"""
 
